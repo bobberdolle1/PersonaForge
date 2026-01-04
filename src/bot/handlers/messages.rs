@@ -2,20 +2,22 @@ use crate::db;
 use crate::state::{AppState, DialogueState};
 use teloxide::prelude::*;
 
-const MAX_CONTEXT_MESSAGES: usize = 10;
+const MAX_CONTEXT_MESSAGES: usize = 20; // Maximum context size to prevent memory issues, but can be overridden by chat settings
 const MAX_RAG_CHUNKS: u32 = 3;
 const DEFAULT_PERSONA_PROMPT: &str = "You are a helpful AI assistant.";
 
 pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
     let text = msg.text().unwrap_or_default();
+
     if text.starts_with('/') {
-        return Ok(());
+        // Handle commands
+        return crate::bot::handlers::commands::handle_command(bot, msg, state).await;
     }
-    
+
     // --- Save incoming message and generate embedding ---
     save_and_embed_message(&state, &msg).await;
-    
+
     // --- Get Active Persona ---
     let persona_prompt = db::get_active_persona(&state.db_pool)
         .await
@@ -25,15 +27,67 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
             DEFAULT_PERSONA_PROMPT.to_string()
         });
 
+    // --- Get Chat Settings ---
+    let chat_settings = db::get_or_create_chat_settings(&state.db_pool, chat_id.0).await
+        .unwrap_or_else(|e| {
+            log::error!("Failed to get chat settings: {}", e);
+            // Return default settings if there's an error
+            db::ChatSettings {
+                chat_id: chat_id.0,
+                auto_reply_enabled: true,
+                reply_mode: "mention_only".to_string(),
+                cooldown_seconds: 5,
+                context_depth: 10,
+                rag_enabled: true,
+            }
+        });
+
+    // Check if auto-reply is enabled
+    if !chat_settings.auto_reply_enabled {
+        return Ok(());
+    }
+
+    // Check reply mode (mention/command vs all messages)
+    let should_reply = if chat_settings.reply_mode == "all_messages" {
+        true
+    } else {
+        // For "mention_only" mode, check if bot is mentioned
+        let bot_info = bot.get_me().await;
+        if let Ok(me) = bot_info {
+            let username = me.user.username.as_deref().unwrap_or("");
+            text.contains(&format!("@{}", username))
+                || text.contains(&format!("/{}", username))
+        } else {
+            false // If we can't get bot info, default to not replying in mention-only mode
+        }
+    };
+
+    if !should_reply {
+        // Still save the message for context, but don't reply
+        save_and_embed_message(&state, &msg).await;
+        return Ok(());
+    }
+
+    // Check cooldown
+    if check_cooldown(&state, chat_id).await {
+        return Ok(());
+    }
+
     // --- RAG & Context ---
-    let long_term_memories = retrieve_memories(&state, chat_id, text).await;
-    let short_term_history = get_and_update_history(state.dialogues.clone(), &msg).await;
+    let long_term_memories = if chat_settings.rag_enabled {
+        retrieve_memories(&state, chat_id, text).await
+    } else {
+        vec![] // Empty vector if RAG is disabled
+    };
+
+    // Use context depth from chat settings
+    let short_term_history = get_and_update_history_with_depth(state.dialogues.clone(), &msg, chat_settings.context_depth as usize).await;
     let prompt = build_prompt(persona_prompt, long_term_memories, short_term_history);
-    
+
     log::debug!("Prompt for chat {}: {}", chat_id, prompt);
 
     // --- Generate Response ---
-    match state.llm_client.generate(&state.config.ollama_chat_model, &prompt).await {
+    match state.llm_client.generate(&state.config.ollama_chat_model, &prompt, state.config.temperature, state.config.max_tokens).await {
         Ok(response_text) => {
             log::info!("LLM response for chat {}: {}", chat_id, response_text);
             if let Ok(sent_msg) = bot.send_message(chat_id, &response_text).await {
@@ -48,6 +102,35 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     }
 
     Ok(())
+}
+
+async fn check_cooldown(state: &AppState, chat_id: ChatId) -> bool {
+    let mut rate_limiter = state.rate_limiter.lock().await;
+    if let Some(last_request) = rate_limiter.get(&chat_id) {
+        let elapsed = last_request.elapsed().as_secs();
+        let chat_settings = match db::get_or_create_chat_settings(&state.db_pool, chat_id.0).await {
+            Ok(settings) => settings,
+            Err(_) => {
+                // Default to 5 seconds if we can't get settings
+                db::ChatSettings {
+                    chat_id: chat_id.0,
+                    auto_reply_enabled: true,
+                    reply_mode: "mention_only".to_string(),
+                    cooldown_seconds: 5,
+                    context_depth: 10,
+                    rag_enabled: true,
+                }
+            }
+        };
+
+        if elapsed < chat_settings.cooldown_seconds as u64 {
+            return true; // Still in cooldown
+        }
+    }
+
+    // Update the last request time
+    rate_limiter.insert(chat_id, std::time::Instant::now());
+    false // Not in cooldown
 }
 
 async fn retrieve_memories(state: &AppState, chat_id: ChatId, text: &str) -> Vec<String> {
@@ -85,11 +168,11 @@ async fn save_and_embed_message(state: &AppState, msg: &Message) {
     }
 }
 
-async fn get_and_update_history(dialogues: DialogueState, new_msg: &Message) -> Vec<Message> {
+async fn get_and_update_history_with_depth(dialogues: DialogueState, new_msg: &Message, depth: usize) -> Vec<Message> {
     let mut dialogues = dialogues.lock().await;
     let history = dialogues.entry(new_msg.chat.id).or_default();
     history.push(new_msg.clone());
-    if history.len() > MAX_CONTEXT_MESSAGES {
+    if history.len() > depth {
         history.remove(0);
     }
     history.clone()

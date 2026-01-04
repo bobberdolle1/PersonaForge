@@ -80,6 +80,55 @@ pub async fn set_active_persona(pool: &SqlitePool, persona_id: i64) -> Result<()
     tx.commit().await
 }
 
+pub async fn create_persona(pool: &SqlitePool, name: &str, prompt: &str) -> Result<i64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO personas (name, prompt, is_active)
+        VALUES (?, ?, 0)
+        "#,
+    )
+    .bind(name)
+    .bind(prompt)
+    .execute(pool)
+    .await?;
+
+    Ok(result.last_insert_rowid())
+}
+
+pub async fn update_persona(pool: &SqlitePool, id: i64, name: &str, prompt: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE personas
+        SET name = ?, prompt = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(name)
+    .bind(prompt)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn delete_persona(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // If we're deleting the active persona, deactivate it first
+    sqlx::query("UPDATE personas SET is_active = 0 WHERE id = ? AND is_active = 1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query("DELETE FROM personas WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await
+}
+
 // --- Public Functions: Chat Settings ---
 
 pub async fn get_or_create_chat_settings(
@@ -127,6 +176,108 @@ pub async fn get_or_create_chat_settings(
         .await?;
         Ok(default_settings)
     }
+}
+
+pub async fn update_rag_settings(
+    pool: &SqlitePool,
+    chat_id: i64,
+    rag_enabled: bool,
+    context_depth: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE chat_settings
+        SET rag_enabled = ?, context_depth = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE chat_id = ?
+        "#,
+    )
+    .bind(rag_enabled)
+    .bind(context_depth)
+    .bind(chat_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn toggle_rag_for_chat(
+    pool: &SqlitePool,
+    chat_id: i64,
+    enabled: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE chat_settings
+        SET rag_enabled = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE chat_id = ?
+        "#,
+    )
+    .bind(enabled)
+    .bind(chat_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn toggle_auto_reply_for_chat(
+    pool: &SqlitePool,
+    chat_id: i64,
+    enabled: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE chat_settings
+        SET auto_reply_enabled = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE chat_id = ?
+        "#,
+    )
+    .bind(enabled)
+    .bind(chat_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn update_reply_mode_for_chat(
+    pool: &SqlitePool,
+    chat_id: i64,
+    reply_mode: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE chat_settings
+        SET reply_mode = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE chat_id = ?
+        "#,
+    )
+    .bind(reply_mode)
+    .bind(chat_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn update_cooldown_for_chat(
+    pool: &SqlitePool,
+    chat_id: i64,
+    cooldown_seconds: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        UPDATE chat_settings
+        SET cooldown_seconds = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE chat_id = ?
+        "#,
+    )
+    .bind(cooldown_seconds)
+    .bind(chat_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 
@@ -239,6 +390,15 @@ pub async fn find_similar_chunks(
         .collect();
 
     Ok(top_chunks)
+}
+
+// --- Public Functions: Health Checks ---
+
+pub async fn check_db_health(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    match sqlx::query("SELECT 1").fetch_one(pool).await {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 // --- Private Helpers ---

@@ -13,6 +13,13 @@ struct GenerateRequest<'a> {
     model: &'a str,
     prompt: &'a str,
     stream: bool,
+    options: GenerateOptions,
+}
+
+#[derive(Serialize)]
+struct GenerateOptions {
+    temperature: f64,
+    num_predict: u32,
 }
 
 #[derive(Deserialize)]
@@ -40,12 +47,16 @@ impl LlmClient {
         }
     }
 
-    pub async fn generate(&self, model: &str, prompt: &str) -> Result<String, reqwest::Error> {
+    pub async fn generate(&self, model: &str, prompt: &str, temperature: f64, max_tokens: u32) -> Result<String, reqwest::Error> {
         let request_url = format!("{}/api/generate", self.url);
         let request_body = GenerateRequest {
             model,
             prompt,
             stream: false,
+            options: GenerateOptions {
+                temperature,
+                num_predict: max_tokens,
+            },
         };
 
         let res = self
@@ -75,5 +86,14 @@ impl LlmClient {
 
         let response_body = res.json::<EmbeddingResponse>().await?;
         Ok(response_body.embedding)
+    }
+
+    pub async fn check_health(&self) -> Result<bool, reqwest::Error> {
+        let request_url = format!("{}/api/tags", self.url);
+
+        match self.client.get(&request_url).send().await {
+            Ok(response) => Ok(response.status().is_success()),
+            Err(_) => Ok(false),
+        }
     }
 }
