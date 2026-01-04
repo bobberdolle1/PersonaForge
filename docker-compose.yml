@@ -8,31 +8,16 @@ services:
     container_name: persona_forge_bot
     env_file:
       - .env
-    # The bot will wait for Ollama to be available.
-    # In a real-world scenario, the bot should have retry logic internally.
-    depends_on:
-      ollama:
-        condition: service_started
-    networks:
-      - persona-forge-net
+    # The bot will connect to Ollama running on the host machine.
+    # On Linux, `host.docker.internal` might not resolve by default,
+    # so explicitly map it to the host IP.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Restart policy
     restart: unless-stopped
 
-  ollama:
-    image: ollama/ollama
-    container_name: ollama_service
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - persona-forge-net
-    restart: unless-stopped
-
 networks:
-  persona-forge-net:
-    driver: bridge
-
-volumes:
-  ollama_data:
-    driver: local
+  default:
+    # Use the default bridge network if Ollama is running on the host
+    # and accessible via host.docker.internal
+    # No custom network is needed for bot-host communication.

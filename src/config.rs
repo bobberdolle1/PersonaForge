@@ -14,11 +14,11 @@ pub struct Config {
 }
 
 fn default_ollama_url() -> String {
-    "http://ollama:11434".to_string()
+    "http://host.docker.internal:11434".to_string()
 }
 
 fn default_ollama_chat_model() -> String {
-    "llama3:latest".to_string()
+    "gemini-3-flash-preview:cloud".to_string()
 }
 
 fn default_ollama_embedding_model() -> String {
