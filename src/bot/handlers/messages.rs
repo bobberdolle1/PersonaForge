@@ -4,15 +4,13 @@ use teloxide::prelude::*;
 
 const MAX_CONTEXT_MESSAGES: usize = 10;
 const MAX_RAG_CHUNKS: u32 = 3;
-const DEFAULT_LLM_MODEL: &str = "llama3:latest";
-const DEFAULT_EMBEDDING_MODEL: &str = "nomic-embed-text";
 const DEFAULT_PERSONA_PROMPT: &str = "You are a helpful AI assistant.";
 
 pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
     let text = msg.text().unwrap_or_default();
     if text.starts_with('/') {
-        return Ok(())
+        return Ok(());
     }
     
     // --- Save incoming message and generate embedding ---
@@ -35,7 +33,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     log::debug!("Prompt for chat {}: {}", chat_id, prompt);
 
     // --- Generate Response ---
-    match state.llm_client.generate(DEFAULT_LLM_MODEL, &prompt).await {
+    match state.llm_client.generate(&state.config.ollama_chat_model, &prompt).await {
         Ok(response_text) => {
             log::info!("LLM response for chat {}: {}", chat_id, response_text);
             if let Ok(sent_msg) = bot.send_message(chat_id, &response_text).await {
@@ -53,7 +51,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
 }
 
 async fn retrieve_memories(state: &AppState, chat_id: ChatId, text: &str) -> Vec<String> {
-    match state.llm_client.generate_embeddings(DEFAULT_EMBEDDING_MODEL, text).await {
+    match state.llm_client.generate_embeddings(&state.config.ollama_embedding_model, text).await {
         Ok(embedding) => {
             match db::find_similar_chunks(&state.db_pool, chat_id.0, &embedding, MAX_RAG_CHUNKS).await {
                 Ok(chunks) => chunks,
@@ -77,7 +75,7 @@ async fn save_and_embed_message(state: &AppState, msg: &Message) {
         let text = text.to_string();
         tokio::spawn(async move {
             if let Ok(db_id) = db::save_message(&state.db_pool, &msg).await {
-                if let Ok(embedding) = state.llm_client.generate_embeddings(DEFAULT_EMBEDDING_MODEL, &text).await {
+                if let Ok(embedding) = state.llm_client.generate_embeddings(&state.config.ollama_embedding_model, &text).await {
                     if let Err(e) = db::save_embedding(&state.db_pool, db_id, &text, &embedding).await {
                         log::error!("Failed to save embedding: {}", e);
                     }
