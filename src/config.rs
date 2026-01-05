@@ -15,6 +15,8 @@ pub struct Config {
     pub temperature: f64,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    #[serde(default = "default_bot_name")]
+    pub bot_name: String,
 }
 
 fn default_ollama_url() -> String {
@@ -35,6 +37,10 @@ fn default_temperature() -> f64 {
 
 fn default_max_tokens() -> u32 {
     2048
+}
+
+fn default_bot_name() -> String {
+    "PersonaForge".to_string()
 }
 
 impl Config {

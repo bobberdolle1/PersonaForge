@@ -89,8 +89,11 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     // --- Generate Response ---
     match state.llm_client.generate(&state.config.ollama_chat_model, &prompt, state.config.temperature, state.config.max_tokens).await {
         Ok(response_text) => {
-            log::info!("LLM response for chat {}: {}", chat_id, response_text);
-            if let Ok(sent_msg) = bot.send_message(chat_id, &response_text).await {
+            // Apply human-like behavior rules
+            let processed_response = apply_human_behavior_rules(response_text, &state.config.bot_name);
+
+            log::info!("LLM response for chat {}: {}", chat_id, processed_response);
+            if let Ok(sent_msg) = bot.send_message(chat_id, &processed_response).await {
                 save_and_embed_message(&state, &sent_msg).await;
                 add_message_to_history(state.dialogues.clone(), &sent_msg).await;
             }
@@ -209,4 +212,39 @@ fn build_prompt(
     }
     prompt.push_str("Bot: ");
     prompt
+}
+
+fn apply_human_behavior_rules(response: String, bot_name: &str) -> String {
+    let mut processed_response = response;
+
+    // Rule 1: Avoid revealing that it's a bot
+    processed_response = processed_response.replace("I am a bot", "I am an AI assistant");
+    processed_response = processed_response.replace("I'm a bot", "I'm an AI assistant");
+    processed_response = processed_response.replace("as a bot", "as an AI assistant");
+    processed_response = processed_response.replace("as an AI assistant", "as an AI"); // More natural
+    processed_response = processed_response.replace(&format!("I am {}", bot_name), "Hi, I'm an AI");
+    processed_response = processed_response.replace(&format!("I'm {}", bot_name), "Hi, I'm an AI");
+
+    // Rule 2: Reduce repetitive phrases
+    processed_response = processed_response.replace("Sure, ", "");
+    processed_response = processed_response.replace("Okay, ", "");
+    processed_response = processed_response.replace("Certainly, ", "");
+    processed_response = processed_response.replace("Absolutely, ", "");
+
+    // Rule 3: Handle personal data carefully
+    processed_response = processed_response.replace("personal information", "private details");
+    processed_response = processed_response.replace("personal data", "private details");
+
+    // Rule 4: Add more natural phrasing
+    if processed_response.starts_with("Yes, ") {
+        processed_response = processed_response.replacen("Yes, ", "", 1);
+    }
+    if processed_response.starts_with("No, ") {
+        processed_response = processed_response.replacen("No, ", "", 1);
+    }
+
+    // Rule 5: Avoid mentioning the bot's name unnecessarily
+    processed_response = processed_response.replace(&format!(" {}", bot_name), " I");
+
+    processed_response
 }
