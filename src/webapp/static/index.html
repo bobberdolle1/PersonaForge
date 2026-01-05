@@ -14,6 +14,7 @@
             <button class="nav-btn active" data-tab="status">📊</button>
             <button class="nav-btn" data-tab="personas">🎭</button>
             <button class="nav-btn" data-tab="chats">💬</button>
+            <button class="nav-btn" data-tab="security">🛡️</button>
             <button class="nav-btn" data-tab="config">⚙️</button>
         </nav>
 
@@ -68,6 +69,59 @@
         <section id="chats" class="tab">
             <h2>Чаты</h2>
             <div id="chats-list" class="list"></div>
+        </section>
+
+        <!-- Security Tab -->
+        <section id="security" class="tab">
+            <h2>🛡️ Безопасность</h2>
+            
+            <div class="info-card">
+                <h3>Защита от Prompt Injection</h3>
+                <div class="config-list">
+                    <div>• Санитизация пользовательского ввода</div>
+                    <div>• Детекция подозрительных паттернов</div>
+                    <div>• Адаптивный rate limiting</div>
+                    <div>• Временные блокировки</div>
+                </div>
+            </div>
+
+            <div class="info-card">
+                <h3>Настройки</h3>
+                <div class="config-list">
+                    <div>Порог страйка: <strong>30</strong> risk score</div>
+                    <div>Страйков до блока: <strong>3</strong></div>
+                    <div>Длительность блока: <strong>5 мин</strong></div>
+                    <div>Окно страйков: <strong>1 час</strong></div>
+                </div>
+            </div>
+
+            <div class="info-card">
+                <h3>Rate Limiting</h3>
+                <div class="config-list">
+                    <div>0 нарушений: <strong>20</strong> msg/min</div>
+                    <div>1-2 нарушения: <strong>15</strong> msg/min</div>
+                    <div>3-5 нарушений: <strong>10</strong> msg/min</div>
+                    <div>6+ нарушений: <strong>3-5</strong> msg/min</div>
+                </div>
+            </div>
+
+            <div class="info-card">
+                <h3>Проверить пользователя</h3>
+                <div class="form-group">
+                    <label>User ID</label>
+                    <input type="number" id="check-user-id" placeholder="123456789">
+                </div>
+                <button class="btn btn-secondary" onclick="checkUserSecurity()">🔍 Проверить</button>
+            </div>
+
+            <div id="security-result" class="info-card hidden">
+                <h3>Результат</h3>
+                <div id="security-result-content"></div>
+                <div class="list-item-actions" style="margin-top: 12px;">
+                    <button class="btn btn-small btn-danger" id="block-user-btn" onclick="blockUserFromCheck()">🔒 Заблокировать</button>
+                    <button class="btn btn-small btn-secondary" id="unblock-user-btn" onclick="unblockUserFromCheck()">🔓 Разблокировать</button>
+                </div>
+            </div>
         </section>
 
         <!-- Settings Tab -->

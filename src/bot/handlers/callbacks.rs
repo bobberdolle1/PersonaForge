@@ -242,6 +242,13 @@ pub async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: AppState) 
             return Ok(());
         }
         
+        // === SECURITY ===
+        "security" => edit_security_menu(&bot, chat_id, msg_id, &state).await?,
+        "sec_check_user" => {
+            bot.edit_message_text(chat_id, msg_id, "🔍 <b>Проверка пользователя</b>\n\nВведите user_id для проверки:\n\n/cancel для отмены")
+                .parse_mode(ParseMode::Html).await?;
+        }
+        
         // === STATUS ===
         "status" => edit_status(&bot, chat_id, msg_id, &state).await?,
         
@@ -690,6 +697,7 @@ async fn edit_tools_menu(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> Respo
             InlineKeyboardButton::callback("🗑️ Очистить историю", "tools_clear_history"),
             InlineKeyboardButton::callback("🧹 Очистить RAG", "tools_clear_memory"),
         ],
+        vec![InlineKeyboardButton::callback("🛡️ Безопасность", "security")],
         vec![InlineKeyboardButton::callback("🔙 Назад", "main")],
     ]);
     
@@ -1034,6 +1042,35 @@ async fn edit_help_commands(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> Re
     
     let kb = InlineKeyboardMarkup::new(vec![
         vec![InlineKeyboardButton::callback("🔙 К помощи", "help")],
+    ]);
+    
+    bot.edit_message_text(chat_id, msg_id, text)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(kb)
+        .await?;
+    Ok(())
+}
+
+// === SECURITY MENU ===
+
+async fn edit_security_menu(bot: &Bot, chat_id: ChatId, msg_id: MessageId, _state: &AppState) -> ResponseResult<()> {
+    let text = "🛡️ <b>Безопасность</b>\n\n\
+        <b>Защита от prompt injection:</b>\n\
+        • Санитизация пользовательского ввода\n\
+        • Детекция подозрительных паттернов\n\
+        • Адаптивный rate limiting\n\
+        • Временные блокировки\n\n\
+        <b>Настройки:</b>\n\
+        • Порог страйка: 30 risk score\n\
+        • Страйков до блока: 3\n\
+        • Длительность блока: 5 мин\n\n\
+        <b>Команды:</b>\n\
+        <code>/block &lt;user_id&gt; [мин]</code>\n\
+        <code>/unblock &lt;user_id&gt;</code>\n\
+        <code>/security_status &lt;user_id&gt;</code>";
+
+    let kb = InlineKeyboardMarkup::new(vec![
+        vec![InlineKeyboardButton::callback("🔙 Назад", "tools")],
     ]);
     
     bot.edit_message_text(chat_id, msg_id, text)

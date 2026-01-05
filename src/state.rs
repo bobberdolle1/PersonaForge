@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::llm::client::LlmClient;
+use crate::security::{SecurityConfig, SecurityTracker};
 use crate::voice::VoiceClient;
 use crate::web::search::WebSearchClient;
 use sqlx::SqlitePool;
@@ -81,12 +82,22 @@ pub struct AppState {
     pub llm_semaphore: Arc<Semaphore>,
     pub queue_stats: Arc<Mutex<QueueStats>>,
     pub keyword_triggers: Arc<Mutex<HashMap<ChatId, Vec<String>>>>,
+    pub security_tracker: Arc<SecurityTracker>,
 }
 
 impl AppState {
     pub fn new(config: Config, db_pool: SqlitePool) -> Self {
         let config_arc = Arc::new(config);
         let max_concurrent_llm = config_arc.max_concurrent_llm_requests.unwrap_or(3);
+        
+        // Security config from environment or defaults
+        let security_config = SecurityConfig {
+            strike_threshold: 30,
+            max_strikes: 3,
+            block_duration: std::time::Duration::from_secs(300), // 5 min
+            strike_window: std::time::Duration::from_secs(3600),  // 1 hour
+        };
+        
         Self {
             config: config_arc.clone(),
             llm_client: LlmClient::new(config_arc.ollama_url.clone()),
@@ -101,6 +112,7 @@ impl AppState {
             llm_semaphore: Arc::new(Semaphore::new(max_concurrent_llm)),
             queue_stats: Arc::new(Mutex::new(QueueStats::default())),
             keyword_triggers: Arc::new(Mutex::new(HashMap::new())),
+            security_tracker: Arc::new(SecurityTracker::new(security_config)),
         }
     }
 

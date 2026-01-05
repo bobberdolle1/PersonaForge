@@ -50,6 +50,7 @@ async function loadTabData(tab) {
         case 'status': await loadStatus(); break;
         case 'personas': await loadPersonas(); break;
         case 'chats': await loadChats(); break;
+        case 'security': /* static content */ break;
         case 'config': await loadConfig(); break;
     }
 }
@@ -460,3 +461,64 @@ document.getElementById('modal').addEventListener('click', (e) => {
 
 // Initial load
 loadStatus();
+
+// Security functions
+let currentSecurityUserId = null;
+
+async function checkUserSecurity() {
+    const userId = document.getElementById('check-user-id').value;
+    if (!userId) {
+        tg.showAlert('Введите User ID');
+        return;
+    }
+
+    try {
+        const status = await api.get(`/security/users/${userId}`);
+        currentSecurityUserId = parseInt(userId);
+        
+        const resultDiv = document.getElementById('security-result');
+        const contentDiv = document.getElementById('security-result-content');
+        
+        const statusText = status.is_blocked ? '🔒 Заблокирован' : 
+                          status.is_rate_limited ? '⏳ Rate Limited' : '✅ Активен';
+        
+        contentDiv.innerHTML = `
+            <div>User ID: <strong>${status.user_id}</strong></div>
+            <div>Статус: <strong>${statusText}</strong></div>
+            <div>Текущие страйки: <strong>${status.strikes}/3</strong></div>
+            <div>Всего нарушений: <strong>${status.total_violations}</strong></div>
+        `;
+        
+        resultDiv.classList.remove('hidden');
+        
+        // Show/hide buttons based on status
+        document.getElementById('block-user-btn').style.display = status.is_blocked ? 'none' : 'inline-block';
+        document.getElementById('unblock-user-btn').style.display = status.is_blocked ? 'inline-block' : 'none';
+    } catch (e) {
+        document.getElementById('security-result').classList.add('hidden');
+    }
+}
+
+async function blockUserFromCheck() {
+    if (!currentSecurityUserId) return;
+    
+    tg.showConfirm(`Заблокировать пользователя ${currentSecurityUserId} на 30 минут?`, async (confirmed) => {
+        if (confirmed) {
+            try {
+                await api.post(`/security/users/${currentSecurityUserId}/block`, { duration_minutes: 30 });
+                tg.showAlert('Пользователь заблокирован');
+                await checkUserSecurity();
+            } catch (e) {}
+        }
+    });
+}
+
+async function unblockUserFromCheck() {
+    if (!currentSecurityUserId) return;
+    
+    try {
+        await api.post(`/security/users/${currentSecurityUserId}/unblock`, {});
+        tg.showAlert('Пользователь разблокирован');
+        await checkUserSecurity();
+    } catch (e) {}
+}

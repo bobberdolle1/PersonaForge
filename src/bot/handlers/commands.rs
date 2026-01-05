@@ -51,6 +51,10 @@ pub async fn handle_command(bot: Bot, msg: Message, state: AppState) -> Response
         "/export_persona" => handle_export_persona(bot, msg, &state).await,
         "/export_all_personas" => handle_export_all_personas(bot, msg, &state).await,
         "/import_persona" => handle_import_persona(bot, msg, &state).await,
+        // Security commands
+        "/block" => handle_block_user(bot, msg, &state).await,
+        "/unblock" => handle_unblock_user(bot, msg, &state).await,
+        "/security_status" => handle_security_status(bot, msg, &state).await,
         _ => {
             bot.send_message(chat_id, "❌ Неизвестная команда. /help").await?;
             Ok(())
@@ -642,6 +646,9 @@ pub async fn send_help_message(bot: Bot, chat_id: ChatId) -> ResponseResult<()> 
 <b>📊 Система:</b>
 /status, /stats, /broadcast
 
+<b>🛡️ Безопасность:</b>
+/block, /unblock, /security_status
+
 <b>🎛️ Меню:</b>
 /menu, /settings
 
@@ -649,5 +656,128 @@ pub async fn send_help_message(bot: Bot, chat_id: ChatId) -> ResponseResult<()> 
 Бот поддерживает треды в супергруппах"#;
 
     bot.send_message(chat_id, text).parse_mode(ParseMode::Html).await?;
+    Ok(())
+}
+
+// ============================================================================
+// Security commands
+// ============================================================================
+
+/// Block a user manually: /block <user_id> [minutes]
+async fn handle_block_user(bot: Bot, msg: Message, state: &AppState) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    let text = msg.text().unwrap_or_default();
+    let parts: Vec<&str> = text.split_whitespace().collect();
+
+    if parts.len() < 2 {
+        bot.send_message(chat_id, "❌ Формат: /block <user_id> [минуты]\nПример: /block 123456789 30").await?;
+        return Ok(());
+    }
+
+    let user_id: u64 = match parts[1].parse() {
+        Ok(id) => id,
+        Err(_) => {
+            bot.send_message(chat_id, "❌ Неверный user_id").await?;
+            return Ok(());
+        }
+    };
+
+    // Don't allow blocking owner
+    if user_id == state.config.owner_id {
+        bot.send_message(chat_id, "❌ Нельзя заблокировать владельца").await?;
+        return Ok(());
+    }
+
+    let minutes: u64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(30);
+    let duration = std::time::Duration::from_secs(minutes * 60);
+
+    state.security_tracker.block_user(user_id, duration).await;
+
+    bot.send_message(
+        chat_id,
+        format!("🔒 Пользователь {} заблокирован на {} минут", user_id, minutes)
+    ).await?;
+
+    Ok(())
+}
+
+/// Unblock a user: /unblock <user_id>
+async fn handle_unblock_user(bot: Bot, msg: Message, state: &AppState) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    let text = msg.text().unwrap_or_default();
+    let parts: Vec<&str> = text.split_whitespace().collect();
+
+    if parts.len() < 2 {
+        bot.send_message(chat_id, "❌ Формат: /unblock <user_id>").await?;
+        return Ok(());
+    }
+
+    let user_id: u64 = match parts[1].parse() {
+        Ok(id) => id,
+        Err(_) => {
+            bot.send_message(chat_id, "❌ Неверный user_id").await?;
+            return Ok(());
+        }
+    };
+
+    state.security_tracker.unblock_user(user_id).await;
+
+    bot.send_message(
+        chat_id,
+        format!("🔓 Пользователь {} разблокирован", user_id)
+    ).await?;
+
+    Ok(())
+}
+
+/// Check security status for a user: /security_status [user_id]
+async fn handle_security_status(bot: Bot, msg: Message, state: &AppState) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    let text = msg.text().unwrap_or_default();
+    let parts: Vec<&str> = text.split_whitespace().collect();
+
+    if parts.len() < 2 {
+        // Show general security info
+        let response = r#"🛡️ <b>Система безопасности</b>
+
+<b>Настройки:</b>
+• Порог страйка: 30 risk score
+• Страйков до блока: 3
+• Длительность блока: 5 мин
+• Окно страйков: 1 час
+
+<b>Команды:</b>
+• /block &lt;user_id&gt; [мин] - заблокировать
+• /unblock &lt;user_id&gt; - разблокировать
+• /security_status &lt;user_id&gt; - статус пользователя"#;
+
+        bot.send_message(chat_id, response).parse_mode(ParseMode::Html).await?;
+        return Ok(());
+    }
+
+    let user_id: u64 = match parts[1].parse() {
+        Ok(id) => id,
+        Err(_) => {
+            bot.send_message(chat_id, "❌ Неверный user_id").await?;
+            return Ok(());
+        }
+    };
+
+    let response = if let Some((strikes, total_violations, is_blocked)) = 
+        state.security_tracker.get_user_stats(user_id).await 
+    {
+        let status = if is_blocked { "🔒 Заблокирован" } else { "✅ Активен" };
+        format!(
+            "🛡️ <b>Пользователь {}</b>\n\n\
+            Статус: {}\n\
+            Текущие страйки: {}/3\n\
+            Всего нарушений: {}",
+            user_id, status, strikes, total_violations
+        )
+    } else {
+        format!("✅ Пользователь {} не имеет нарушений", user_id)
+    };
+
+    bot.send_message(chat_id, response).parse_mode(ParseMode::Html).await?;
     Ok(())
 }

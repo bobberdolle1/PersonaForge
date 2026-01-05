@@ -647,3 +647,109 @@ pub async fn update_config(
 
     Ok(Json(ApiResponse::ok(())))
 }
+
+
+// --- Security ---
+
+#[derive(Serialize)]
+pub struct SecurityStatusResponse {
+    pub user_id: u64,
+    pub strikes: u8,
+    pub total_violations: u64,
+    pub is_blocked: bool,
+    pub is_rate_limited: bool,
+}
+
+#[derive(Serialize)]
+pub struct SecurityConfigResponse {
+    pub strike_threshold: u8,
+    pub max_strikes: u8,
+    pub block_duration_seconds: u64,
+    pub strike_window_seconds: u64,
+}
+
+#[derive(Deserialize)]
+pub struct BlockUserRequest {
+    pub duration_minutes: Option<u64>,
+}
+
+pub async fn get_security_config(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<SecurityConfigResponse>>, StatusCode> {
+    extract_user(&headers, &state)?;
+
+    Ok(Json(ApiResponse::ok(SecurityConfigResponse {
+        strike_threshold: 30,
+        max_strikes: 3,
+        block_duration_seconds: 300,
+        strike_window_seconds: 3600,
+    })))
+}
+
+pub async fn get_user_security_status(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(user_id): Path<u64>,
+) -> Result<Json<ApiResponse<SecurityStatusResponse>>, StatusCode> {
+    extract_user(&headers, &state)?;
+
+    let (strikes, total_violations, is_blocked) = state
+        .security_tracker
+        .get_user_stats(user_id)
+        .await
+        .unwrap_or((0, 0, false));
+
+    let is_rate_limited = state.security_tracker.is_blocked(user_id).await.is_some();
+
+    Ok(Json(ApiResponse::ok(SecurityStatusResponse {
+        user_id,
+        strikes,
+        total_violations,
+        is_blocked,
+        is_rate_limited,
+    })))
+}
+
+pub async fn block_user(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(user_id): Path<u64>,
+    Json(req): Json<BlockUserRequest>,
+) -> Result<Json<ApiResponse<()>>, StatusCode> {
+    let auth_user = extract_user(&headers, &state)?;
+
+    // Don't allow blocking owner
+    if user_id == state.config.owner_id {
+        return Ok(Json(ApiResponse::err("Cannot block owner")));
+    }
+
+    let minutes = req.duration_minutes.unwrap_or(30);
+    let duration = std::time::Duration::from_secs(minutes * 60);
+
+    state.security_tracker.block_user(user_id, duration).await;
+
+    log::info!(
+        "User {} blocked by {} for {} minutes via API",
+        user_id, auth_user.id, minutes
+    );
+
+    Ok(Json(ApiResponse::ok(())))
+}
+
+pub async fn unblock_user(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(user_id): Path<u64>,
+) -> Result<Json<ApiResponse<()>>, StatusCode> {
+    let auth_user = extract_user(&headers, &state)?;
+
+    state.security_tracker.unblock_user(user_id).await;
+
+    log::info!(
+        "User {} unblocked by {} via API",
+        user_id, auth_user.id
+    );
+
+    Ok(Json(ApiResponse::ok(())))
+}
