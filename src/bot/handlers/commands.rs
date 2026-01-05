@@ -12,15 +12,20 @@ pub async fn handle_command(bot: Bot, msg: Message, state: AppState) -> Response
 
     log::info!("⚡ Command from {} ({}): {}", username, user_id.unwrap_or(0), text);
 
-    // Check owner
+    // /start доступен всем
+    let cmd = text.split_whitespace().next().unwrap_or("");
+    if cmd == "/start" {
+        return handle_start(bot, msg).await;
+    }
+
+    // Остальные команды только для владельца
     if user_id != Some(state.config.owner_id) {
         bot.send_message(chat_id, "❌ У вас нет прав для выполнения этой команды.").await?;
         return Ok(());
     }
 
-    let cmd = text.split_whitespace().next().unwrap_or("");
-    
     match cmd {
+        "/cancel" => handle_cancel(bot, msg, &state).await,
         "/create_persona" => handle_create_persona(bot, msg, &state).await,
         "/list_personas" => handle_list_personas(bot, msg, &state).await,
         "/activate_persona" => handle_activate_persona(bot, msg, &state).await,
@@ -741,5 +746,46 @@ async fn handle_security_status(bot: Bot, msg: Message, state: &AppState) -> Res
     };
 
     bot.send_message(chat_id, response).parse_mode(ParseMode::Html).await?;
+    Ok(())
+}
+
+async fn handle_start(bot: Bot, msg: Message) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    let user_name = msg.from.as_ref()
+        .map(|u| u.first_name.as_str())
+        .unwrap_or("друг");
+
+    let welcome = format!(
+        "👋 <b>Привет, {}!</b>\n\n\
+        Я <b>PersonaForge</b> — AI-бот с кастомными персонами и долгосрочной памятью.\n\n\
+        🎭 <b>Что умею:</b>\n\
+        • Общаться в разных стилях (персоны)\n\
+        • Помнить контекст разговора (RAG)\n\
+        • Искать актуальную инфу в интернете\n\
+        • Распознавать голосовые сообщения\n\
+        • Анализировать изображения\n\n\
+        📝 <b>Команды:</b>\n\
+        /menu — главное меню\n\
+        /help — справка\n\
+        /status — статус системы\n\n\
+        Просто напиши мне что-нибудь! 💬",
+        user_name
+    );
+
+    bot.send_message(chat_id, welcome)
+        .parse_mode(ParseMode::Html)
+        .await?;
+    Ok(())
+}
+
+async fn handle_cancel(bot: Bot, msg: Message, state: &AppState) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    
+    if state.get_wizard_state(chat_id).await.is_some() {
+        state.clear_wizard_state(chat_id).await;
+        bot.send_message(chat_id, "✅ Операция отменена.").await?;
+    } else {
+        bot.send_message(chat_id, "ℹ️ Нечего отменять.").await?;
+    }
     Ok(())
 }
