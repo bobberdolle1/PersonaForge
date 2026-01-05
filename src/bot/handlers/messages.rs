@@ -1,6 +1,7 @@
 use crate::db;
 use crate::state::{AppState, DialogueState};
 use teloxide::prelude::*;
+use teloxide::types::ParseMode;
 
 const MAX_CONTEXT_MESSAGES: usize = 20; // Maximum context size to prevent memory issues, but can be overridden by chat settings
 const MAX_RAG_CHUNKS: u32 = 3;
@@ -99,7 +100,23 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
             let processed_response = apply_human_behavior_rules(response_text, &state.config.bot_name);
 
             log::info!("LLM response for chat {}: {} (took {}ms)", chat_id, processed_response, response_time);
-            if let Ok(sent_msg) = bot.send_message(chat_id, &processed_response).await {
+            
+            // Try to send with MarkdownV2, fallback to plain text if parsing fails
+            let escaped = escape_markdown_v2(&processed_response);
+            let send_result = bot.send_message(chat_id, &escaped)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await;
+            
+            let sent_msg = match send_result {
+                Ok(msg) => Some(msg),
+                Err(_) => {
+                    // Markdown parsing failed, try plain text
+                    log::debug!("Markdown parsing failed, sending as plain text");
+                    bot.send_message(chat_id, &processed_response).await.ok()
+                }
+            };
+            
+            if let Some(sent_msg) = sent_msg {
                 save_and_embed_message(&state, &sent_msg).await;
                 add_message_to_history(state.dialogues.clone(), &sent_msg).await;
             }
@@ -254,4 +271,150 @@ fn apply_human_behavior_rules(response: String, bot_name: &str) -> String {
     processed_response = processed_response.replace(&format!(" {}", bot_name), " I");
 
     processed_response
+}
+
+
+/// Escape special characters for Telegram MarkdownV2
+/// Preserves intentional formatting like *bold*, _italic_, `code`, ```code blocks```
+fn escape_markdown_v2(text: &str) -> String {
+    let mut result = String::with_capacity(text.len() * 2);
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    
+    while i < len {
+        let c = chars[i];
+        
+        // Check for code blocks ```
+        if c == '`' && i + 2 < len && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            // Find closing ```
+            if let Some(end) = find_closing_code_block(&chars, i + 3) {
+                // Copy code block as-is (code blocks don't need escaping inside)
+                for j in i..=end {
+                    result.push(chars[j]);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        
+        // Check for inline code `
+        if c == '`' {
+            if let Some(end) = find_closing_char(&chars, i + 1, '`') {
+                // Copy inline code as-is
+                for j in i..=end {
+                    result.push(chars[j]);
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        
+        // Check for bold **text** or *text*
+        if c == '*' {
+            let double = i + 1 < len && chars[i + 1] == '*';
+            let closing_char = if double { "**" } else { "*" };
+            let start = if double { i + 2 } else { i + 1 };
+            
+            if let Some(end) = find_closing_pattern(&chars, start, closing_char) {
+                // Keep formatting markers, escape content
+                result.push('*');
+                if double {
+                    result.push('*');
+                }
+                for j in start..end {
+                    if should_escape_in_formatted(chars[j]) {
+                        result.push('\\');
+                    }
+                    result.push(chars[j]);
+                }
+                result.push('*');
+                if double {
+                    result.push('*');
+                    i = end + 2;
+                } else {
+                    i = end + 1;
+                }
+                continue;
+            }
+        }
+        
+        // Check for italic _text_
+        if c == '_' {
+            if let Some(end) = find_closing_char(&chars, i + 1, '_') {
+                result.push('_');
+                for j in (i + 1)..end {
+                    if should_escape_in_formatted(chars[j]) {
+                        result.push('\\');
+                    }
+                    result.push(chars[j]);
+                }
+                result.push('_');
+                i = end + 1;
+                continue;
+            }
+        }
+        
+        // Escape special characters outside of formatting
+        if should_escape_outside(c) {
+            result.push('\\');
+        }
+        result.push(c);
+        i += 1;
+    }
+    
+    result
+}
+
+fn find_closing_code_block(chars: &[char], start: usize) -> Option<usize> {
+    let len = chars.len();
+    let mut i = start;
+    while i + 2 < len {
+        if chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            return Some(i + 2);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_closing_char(chars: &[char], start: usize, closing: char) -> Option<usize> {
+    for i in start..chars.len() {
+        if chars[i] == closing {
+            return Some(i);
+        }
+        if chars[i] == '\n' {
+            return None; // Don't cross newlines for inline formatting
+        }
+    }
+    None
+}
+
+fn find_closing_pattern(chars: &[char], start: usize, pattern: &str) -> Option<usize> {
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+    let plen = pattern_chars.len();
+    
+    for i in start..(chars.len() - plen + 1) {
+        let mut matches = true;
+        for j in 0..plen {
+            if chars[i + j] != pattern_chars[j] {
+                matches = false;
+                break;
+            }
+        }
+        if matches {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn should_escape_in_formatted(c: char) -> bool {
+    // Inside formatted text, escape these
+    matches!(c, '\\' | '`' | '[' | ']' | '(' | ')' | '~' | '>' | '#' | '+' | '-' | '=' | '|' | '{' | '}' | '.' | '!')
+}
+
+fn should_escape_outside(c: char) -> bool {
+    // Outside formatted text, escape all special chars
+    matches!(c, '\\' | '[' | ']' | '(' | ')' | '~' | '>' | '#' | '+' | '-' | '=' | '|' | '{' | '}' | '.' | '!')
 }
