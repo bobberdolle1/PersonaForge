@@ -223,7 +223,6 @@ async function loadChats() {
                 <div class="list-item-actions">
                     <button class="btn btn-small btn-secondary" onclick="editChat(${c.chat_id})">Настройки</button>
                     <button class="btn btn-small btn-secondary" onclick="editTriggers(${c.chat_id})">Триггеры</button>
-                    <button class="btn btn-small btn-secondary" onclick="editGhost(${c.chat_id})">👻 Ghost</button>
                 </div>
             </div>
         `).join('');
@@ -319,44 +318,6 @@ async function clearTriggers(chatId) {
         await api.put(`/chats/${chatId}/triggers`, { keywords: [] });
         closeModal();
         tg.showAlert('Триггеры очищены');
-    } catch (e) {}
-}
-
-async function editGhost(chatId) {
-    try {
-        const ghost = await api.get(`/chats/${chatId}/ghost`);
-        
-        showModal(`Ghost Mode — Chat ${chatId}`, `
-            <p style="color: var(--tg-theme-hint-color); margin-bottom: 16px;">
-                В режиме призрака ваши сообщения отправляются от имени бота
-            </p>
-            <div class="toggle-row">
-                <span>Включить Ghost Mode</span>
-                <label class="toggle">
-                    <input type="checkbox" id="ghost-enabled" ${ghost.enabled ? 'checked' : ''}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="toggle-row">
-                <span>Сохранять как примеры</span>
-                <label class="toggle">
-                    <input type="checkbox" id="ghost-save" ${ghost.save_as_examples ? 'checked' : ''}>
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <button class="btn btn-primary" onclick="saveGhost(${chatId})">Сохранить</button>
-        `);
-    } catch (e) {}
-}
-
-async function saveGhost(chatId) {
-    try {
-        await api.put(`/chats/${chatId}/ghost`, {
-            enabled: document.getElementById('ghost-enabled').checked,
-            save_as_examples: document.getElementById('ghost-save').checked
-        });
-        closeModal();
-        tg.showAlert('Ghost Mode обновлён');
     } catch (e) {}
 }
 

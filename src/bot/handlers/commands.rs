@@ -560,7 +560,6 @@ pub async fn send_main_menu(bot: Bot, chat_id: ChatId) -> ResponseResult<()> {
         vec![InlineKeyboardButton::callback("⚙️ Модель", "model_settings")],
         vec![InlineKeyboardButton::callback("🧠 RAG", "rag_settings")],
         vec![InlineKeyboardButton::callback("💬 Чат", "chat_settings")],
-        vec![InlineKeyboardButton::callback("👻 Призрак", "ghost_menu")],
         vec![InlineKeyboardButton::callback("📊 Статус", "system_status")],
         vec![InlineKeyboardButton::callback("ℹ️ Помощь", "help_info")],
     ]);
@@ -605,9 +604,6 @@ pub async fn send_help_message(bot: Bot, chat_id: ChatId) -> ResponseResult<()> 
 /enable_auto_reply, /disable_auto_reply
 /reply_to_all, /reply_to_mention
 /set_cooldown, /triggers
-
-<b>👻 Призрак:</b>
-/ghost on|off|status
 
 <b>📊 Система:</b>
 /status, /stats, /broadcast
