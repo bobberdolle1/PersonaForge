@@ -112,25 +112,98 @@ impl WebSearchClient {
 
     /// Search and format results for LLM context
     pub async fn search_for_context(&self, query: &str, max_results: usize) -> String {
-        match self.search(query).await {
-            Ok(results) if !results.is_empty() => {
-                let mut context = format!("### Web search results for '{}':\n\n", query);
-                for (i, result) in results.into_iter().take(max_results).enumerate() {
-                    context.push_str(&format!(
-                        "{}. {}\n{}\n\n",
-                        i + 1,
-                        result.title,
-                        result.snippet
-                    ));
+        // Generate multiple search queries for better coverage
+        let queries = self.generate_search_queries(query);
+        log::debug!("🔍 Web search queries: {:?}", queries);
+        
+        let mut all_results: Vec<SearchResult> = Vec::new();
+        let mut seen_snippets: std::collections::HashSet<String> = std::collections::HashSet::new();
+        
+        // Execute searches in parallel
+        let futures: Vec<_> = queries.iter().map(|q| self.search(q)).collect();
+        let results = futures::future::join_all(futures).await;
+        
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(search_results) => {
+                    log::debug!("🔍 Query {} returned {} results", i + 1, search_results.len());
+                    for r in search_results {
+                        // Deduplicate by snippet content (first 100 chars)
+                        let snippet_key: String = r.snippet.chars().take(100).collect();
+                        if !seen_snippets.contains(&snippet_key) {
+                            seen_snippets.insert(snippet_key);
+                            all_results.push(r);
+                        }
+                    }
                 }
-                context
-            }
-            Ok(_) => String::new(),
-            Err(e) => {
-                log::warn!("Web search failed: {}", e);
-                String::new()
+                Err(e) => {
+                    log::warn!("🔍 Query {} failed: {}", i + 1, e);
+                }
             }
         }
+        
+        if all_results.is_empty() {
+            log::debug!("🔍 No web results found for: {}", query);
+            return String::new();
+        }
+        
+        log::info!("🌐 Web search: {} unique results for '{}'", all_results.len(), query);
+        
+        let mut context = format!("### Результаты веб-поиска по '{}':\n\n", query);
+        for (i, result) in all_results.into_iter().take(max_results).enumerate() {
+            context.push_str(&format!(
+                "{}. {}\n{}\n\n",
+                i + 1,
+                result.title,
+                result.snippet
+            ));
+        }
+        context
+    }
+    
+    /// Generate multiple search query variations for better results
+    fn generate_search_queries(&self, original: &str) -> Vec<String> {
+        let mut queries = vec![original.to_string()];
+        
+        let text_lower = original.to_lowercase();
+        
+        // Add "что такое" prefix for definition-like queries
+        if !text_lower.contains("что такое") && !text_lower.contains("what is") {
+            if text_lower.starts_with("что ") || text_lower.starts_with("кто ") {
+                // Already a question, keep as is
+            } else if original.split_whitespace().count() <= 3 {
+                // Short query - might be looking for definition
+                queries.push(format!("{} это", original));
+            }
+        }
+        
+        // Add year for potentially time-sensitive queries
+        let current_year = chrono::Local::now().format("%Y").to_string();
+        let time_sensitive = ["цена", "курс", "стоимость", "price", "cost", 
+                             "лучший", "best", "топ", "top", "рейтинг", "rating",
+                             "новый", "new", "последний", "latest"];
+        
+        if time_sensitive.iter().any(|t| text_lower.contains(t)) {
+            if !original.contains(&current_year) {
+                queries.push(format!("{} {}", original, current_year));
+            }
+        }
+        
+        // Add "купить" for price queries
+        if (text_lower.contains("цена") || text_lower.contains("стоимость") || text_lower.contains("сколько стоит"))
+            && !text_lower.contains("купить") {
+            queries.push(format!("{} купить", original));
+        }
+        
+        // Add "обзор" for product queries
+        let product_indicators = ["rtx", "gtx", "ryzen", "intel", "iphone", "samsung", "nvidia", "amd"];
+        if product_indicators.iter().any(|p| text_lower.contains(p)) && !text_lower.contains("обзор") {
+            queries.push(format!("{} обзор", original));
+        }
+        
+        // Limit to 3 queries max to avoid rate limiting
+        queries.truncate(3);
+        queries
     }
 }
 

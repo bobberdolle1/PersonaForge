@@ -9,12 +9,24 @@ use teloxide::prelude::*;
 async fn main() {
     dotenv::dotenv().ok();
     pretty_env_logger::init();
-    log::info!("Starting PersonaForge bot...");
+    
+    log::info!("╔════════════════════════════════════════╗");
+    log::info!("║       🤖 PersonaForge Starting...      ║");
+    log::info!("╚════════════════════════════════════════╝");
 
     let config = match Config::from_env() {
-        Ok(cfg) => cfg,
+        Ok(cfg) => {
+            log::info!("✅ Config loaded");
+            log::info!("   ├─ Bot: {}", cfg.bot_name);
+            log::info!("   ├─ Owner: {}", cfg.owner_id);
+            log::info!("   ├─ LLM: {}", cfg.ollama_chat_model);
+            log::info!("   ├─ Vision: {}", if cfg.vision_enabled { "✓" } else { "✗" });
+            log::info!("   ├─ Voice: {}", if cfg.voice_enabled { "✓" } else { "✗" });
+            log::info!("   └─ Web Search: {}", if cfg.web_search_enabled { "✓" } else { "✗" });
+            cfg
+        }
         Err(e) => {
-            log::error!("Failed to load configuration: {}", e);
+            log::error!("❌ Failed to load config: {}", e);
             return;
         }
     };
@@ -25,20 +37,20 @@ async fn main() {
         .await
     {
         Ok(pool) => {
-            log::info!("Database connection pool created.");
+            log::info!("✅ Database connected: {}", config.database_url);
             pool
         }
         Err(e) => {
-            log::error!("Failed to create database connection pool: {}", e);
+            log::error!("❌ Database connection failed: {}", e);
             return;
         }
     };
 
     if let Err(e) = sqlx::migrate!("./migrations").run(&db_pool).await {
-        log::error!("Failed to run database migrations: {}", e);
+        log::error!("❌ Migrations failed: {}", e);
         return;
     }
-    log::info!("Database migrations ran successfully.");
+    log::info!("✅ Migrations applied");
 
     let webapp_port = config.webapp_port;
     let bot = Bot::new(config.teloxide_token.clone());
@@ -49,6 +61,11 @@ async fn main() {
     tokio::spawn(async move {
         start_webapp_server(webapp_state, webapp_port).await;
     });
+    log::info!("✅ WebApp started on port {}", webapp_port);
+
+    log::info!("╔════════════════════════════════════════╗");
+    log::info!("║         🚀 Bot is now running!         ║");
+    log::info!("╚════════════════════════════════════════╝");
 
     let handler = dptree::entry()
         .branch(Update::filter_message().endpoint(persona_forge::bot::handlers::messages::handle_message))
@@ -61,5 +78,5 @@ async fn main() {
         .dispatch()
         .await;
 
-    log::info!("Bot has shut down.");
+    log::info!("👋 Bot has shut down.");
 }

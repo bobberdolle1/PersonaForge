@@ -108,6 +108,8 @@ impl LlmClient {
             },
         };
 
+        log::debug!("🤖 LLM request to {} (prompt: {} chars)", model, prompt.len());
+
         let response = self
             .client
             .post(&request_url)
@@ -118,13 +120,13 @@ impl LlmClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            log::error!("LLM API error: {} - {}", status, body);
+            log::error!("❌ LLM API error: {} - {}", status, body);
             return Err(LlmError::InvalidResponse(format!("HTTP {}: {}", status, body)));
         }
 
         let response_body = response.json::<GenerateResponse>().await?;
         let duration = start_time.elapsed();
-        log::info!("LLM generation completed in {}ms", duration.as_millis());
+        log::info!("✅ LLM response in {}ms ({} chars)", duration.as_millis(), response_body.response.len());
         Ok(response_body.response)
     }
 
@@ -137,6 +139,7 @@ impl LlmClient {
         max_tokens: u32,
         timeout_secs: u64,
     ) -> Result<String, LlmError> {
+        log::debug!("⏱️ LLM timeout set to {}s", timeout_secs);
         match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
             self.generate(model, prompt, temperature, max_tokens),
@@ -145,7 +148,7 @@ impl LlmClient {
         {
             Ok(result) => result,
             Err(_) => {
-                log::error!("LLM generation timed out after {}s", timeout_secs);
+                log::error!("⏱️ LLM generation timed out after {}s", timeout_secs);
                 Err(LlmError::Timeout)
             }
         }

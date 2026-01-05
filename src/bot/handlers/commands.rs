@@ -8,8 +8,9 @@ pub async fn handle_command(bot: Bot, msg: Message, state: AppState) -> Response
     let text = msg.text().unwrap_or_default();
     let chat_id = msg.chat.id;
     let user_id = msg.from.as_ref().map(|u| u.id.0);
+    let username = msg.from.as_ref().map(|u| u.first_name.as_str()).unwrap_or("Unknown");
 
-    log::info!("Command from user {}: {}", user_id.unwrap_or(0), text);
+    log::info!("⚡ Command from {} ({}): {}", username, user_id.unwrap_or(0), text);
 
     // Check owner
     if user_id != Some(state.config.owner_id) {

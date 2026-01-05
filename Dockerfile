@@ -1,5 +1,4 @@
 # Stage 1: Build the application
-# We use cargo-chef to cache dependencies
 FROM rust:1.78 as chef
 WORKDIR /app
 RUN cargo install cargo-chef
@@ -17,16 +16,34 @@ COPY . .
 RUN cargo build --release --bin PersonaForge
 
 # Stage 2: Create the final, minimal image
-FROM debian:slim-bullseye as runtime
+FROM debian:bookworm-slim as runtime
 WORKDIR /app
-# Copy the compiled binary from the builder stage
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    sqlite3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the compiled binary (static files are embedded via rust_embed)
 COPY --from=builder /app/target/release/PersonaForge /usr/local/bin/
-# Copy .env file for configuration, ensure it's present during runtime
-# COPY .env .
-# Needed for reqwest to find SSL certificates
+
+# Copy migrations for database setup
+COPY migrations/ /app/migrations/
+
+# SSL certificates for reqwest
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV SSL_CERT_DIR=/etc/ssl/certs
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Create data directory for database
+RUN mkdir -p /app/data
+
+# Set working directory
+WORKDIR /app
+
+# Expose webapp port
+EXPOSE 8080
 
 # Run the binary
 CMD ["/usr/local/bin/PersonaForge"]
