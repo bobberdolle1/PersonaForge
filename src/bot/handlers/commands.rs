@@ -44,7 +44,6 @@ pub async fn handle_command(bot: Bot, msg: Message, state: AppState) -> Response
         }
         "/settings" => send_settings_menu(bot, chat_id).await,
         "/help" => send_help_message(bot, chat_id).await,
-        "/ghost" => handle_ghost_mode(bot, msg, &state).await,
         "/triggers" | "/keywords" => handle_set_triggers(bot, msg, &state).await,
         "/broadcast" => handle_broadcast(bot, msg, &state).await,
         "/queue_stats" | "/stats" => handle_queue_stats(bot, msg, &state).await,
@@ -282,7 +281,6 @@ pub async fn handle_status(bot: Bot, msg: Message, state: &AppState) -> Response
         Ok(Some(p)) => p.name,
         _ => "Не выбрана".into(),
     };
-    let ghost = if state.is_ghost_mode(chat_id).await { "🟢" } else { "🔴" };
     let stats = state.queue_stats.lock().await;
 
     let text = format!(
@@ -290,11 +288,10 @@ r#"📊 <b>Статус</b>
 
 <b>Сервисы:</b> Ollama {} | БД {}
 <b>Персона:</b> {}
-<b>Призрак:</b> {}
 <b>Очередь:</b> {}/{} | Запросов: {} (✅{} ❌{})
 <b>Модель:</b> {}
 <b>Температура:</b> {} | Токены: {}"#,
-        ollama, db_ok, persona, ghost,
+        ollama, db_ok, persona,
         state.llm_semaphore.available_permits(),
         state.config.max_concurrent_llm_requests.unwrap_or(3),
         stats.total_requests, stats.successful_requests, stats.failed_requests,
@@ -364,81 +361,6 @@ async fn handle_set_cooldown(bot: Bot, msg: Message, state: &AppState) -> Respon
     Ok(())
 }
 
-
-async fn handle_ghost_mode(bot: Bot, msg: Message, state: &AppState) -> ResponseResult<()> {
-    let chat_id = msg.chat.id;
-    let text = msg.text().unwrap_or_default();
-    let parts: Vec<&str> = text.split_whitespace().collect();
-
-    match parts.get(1).map(|s| *s) {
-        Some("on") => {
-            let save = parts.get(2).map(|s| *s) != Some("nosave");
-            state.toggle_ghost_mode(chat_id, true, save).await;
-            
-            let help_msg = if save {
-                "👻 <b>Ghost Mode включен!</b>\n\n\
-                Теперь твои сообщения будут отправляться от имени бота.\n\
-                Примеры сохраняются для обучения персоны.\n\n\
-                <b>Команды:</b>\n\
-                • <code>!status</code> — статус\n\
-                • <code>!exit</code> или <code>/ghost off</code> — выход\n\n\
-                <i>Просто пиши — сообщения появятся от бота</i>"
-            } else {
-                "👻 <b>Ghost Mode включен!</b> (без сохранения)\n\n\
-                Твои сообщения отправляются от имени бота.\n\
-                Примеры НЕ сохраняются.\n\n\
-                <b>Команды:</b>\n\
-                • <code>!status</code> — статус\n\
-                • <code>!exit</code> или <code>/ghost off</code> — выход"
-            };
-            bot.send_message(chat_id, help_msg)
-                .parse_mode(ParseMode::Html).await?;
-            log::info!("👻 Ghost mode enabled in chat {} (save={})", chat_id, save);
-        }
-        Some("off") => {
-            state.toggle_ghost_mode(chat_id, false, false).await;
-            bot.send_message(chat_id, "👻 Ghost Mode выключен. Бот снова отвечает сам.").await?;
-            log::info!("👻 Ghost mode disabled in chat {}", chat_id);
-        }
-        Some("status") => {
-            if state.is_ghost_mode(chat_id).await {
-                let ghost = state.ghost_mode.lock().await;
-                if let Some(settings) = ghost.get(&chat_id) {
-                    let duration = settings.started_at.elapsed();
-                    let mins = duration.as_secs() / 60;
-                    let save_status = if settings.save_as_examples { "✅" } else { "❌" };
-                    bot.send_message(chat_id, format!(
-                        "👻 <b>Ghost Mode активен</b>\n\n\
-                        ⏱ Время: {} мин\n\
-                        💾 Сохранение: {}\n\n\
-                        Выход: <code>/ghost off</code>",
-                        mins, save_status
-                    )).parse_mode(ParseMode::Html).await?;
-                }
-            } else {
-                bot.send_message(chat_id, "👻 Ghost Mode выключен").await?;
-            }
-        }
-        _ => {
-            bot.send_message(chat_id, 
-                "👻 <b>Ghost Mode</b>\n\n\
-                Режим, в котором ты пишешь от имени бота.\n\
-                Полезно для обучения персоны на примерах.\n\n\
-                <b>Использование:</b>\n\
-                <code>/ghost on</code> — включить (с сохранением примеров)\n\
-                <code>/ghost on nosave</code> — включить (без сохранения)\n\
-                <code>/ghost off</code> — выключить\n\
-                <code>/ghost status</code> — статус\n\n\
-                <b>Как работает:</b>\n\
-                1. Включаешь ghost mode\n\
-                2. Пишешь сообщения — они появляются от бота\n\
-                3. Твои сообщения удаляются автоматически\n\
-                4. Если включено сохранение — примеры идут в RAG-память"
-            ).parse_mode(ParseMode::Html).await?;
-        }
-    }
-    Ok(())
-}
 
 async fn handle_set_triggers(bot: Bot, msg: Message, state: &AppState) -> ResponseResult<()> {
     use crate::state::WizardState;

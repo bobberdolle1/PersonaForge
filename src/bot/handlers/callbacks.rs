@@ -200,27 +200,6 @@ pub async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: AppState) 
             }
         }
         
-        // === GHOST MODE ===
-        "ghost" => edit_ghost_menu(&bot, chat_id, msg_id, &state).await?,
-        "ghost_on" => {
-            state.toggle_ghost_mode(chat_id, true, true).await;
-            bot.answer_callback_query(q.id.clone()).text("👻 Ghost Mode включен").await?;
-            edit_ghost_menu(&bot, chat_id, msg_id, &state).await?;
-            return Ok(());
-        }
-        "ghost_on_nosave" => {
-            state.toggle_ghost_mode(chat_id, true, false).await;
-            bot.answer_callback_query(q.id.clone()).text("👻 Ghost Mode включен (без сохранения)").await?;
-            edit_ghost_menu(&bot, chat_id, msg_id, &state).await?;
-            return Ok(());
-        }
-        "ghost_off" => {
-            state.toggle_ghost_mode(chat_id, false, false).await;
-            bot.answer_callback_query(q.id.clone()).text("👻 Ghost Mode выключен").await?;
-            edit_ghost_menu(&bot, chat_id, msg_id, &state).await?;
-            return Ok(());
-        }
-        
         // === TOOLS ===
         "tools" => edit_tools_menu(&bot, chat_id, msg_id).await?,
         "tools_broadcast" => {
@@ -257,7 +236,6 @@ pub async fn handle_callback_query(bot: Bot, q: CallbackQuery, state: AppState) 
         "help_personas" => edit_help_personas(&bot, chat_id, msg_id).await?,
         "help_config" => edit_help_config(&bot, chat_id, msg_id).await?,
         "help_chat" => edit_help_chat(&bot, chat_id, msg_id).await?,
-        "help_ghost" => edit_help_ghost(&bot, chat_id, msg_id).await?,
         "help_rag" => edit_help_rag(&bot, chat_id, msg_id).await?,
         "help_commands" => edit_help_commands(&bot, chat_id, msg_id).await?,
         
@@ -281,13 +259,12 @@ async fn edit_main_menu(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> Respon
         ],
         vec![
             InlineKeyboardButton::callback("💬 Чат", "chat"),
-            InlineKeyboardButton::callback("👻 Ghost", "ghost"),
+            InlineKeyboardButton::callback("🛠️ Инструменты", "tools"),
         ],
         vec![
-            InlineKeyboardButton::callback("🛠️ Инструменты", "tools"),
             InlineKeyboardButton::callback("📊 Статус", "status"),
+            InlineKeyboardButton::callback("❓ Помощь", "help"),
         ],
-        vec![InlineKeyboardButton::callback("❓ Помощь", "help")],
     ]);
     
     bot.edit_message_text(chat_id, msg_id, "🤖 <b>PersonaForge</b>\n\nВыберите раздел:")
@@ -659,65 +636,6 @@ async fn edit_memory_depth_menu(bot: &Bot, chat_id: ChatId, msg_id: MessageId, s
     Ok(())
 }
 
-async fn edit_ghost_menu(bot: &Bot, chat_id: ChatId, msg_id: MessageId, state: &AppState) -> ResponseResult<()> {
-    let is_active = state.is_ghost_mode(chat_id).await;
-    let ghost_state = state.ghost_mode.lock().await.get(&chat_id).cloned();
-    let save_examples = ghost_state.as_ref().map(|g| g.save_as_examples).unwrap_or(true);
-    let duration = ghost_state.as_ref().map(|g| g.started_at.elapsed().as_secs() / 60).unwrap_or(0);
-    
-    let text = if is_active {
-        format!(
-            "👻 <b>Ghost Mode</b>\n\n\
-            Статус: 🟢 <b>Активен</b> ({}м)\n\
-            Сохранение: {}\n\n\
-            <b>Сейчас:</b> твои сообщения отправляются от имени бота.\n\n\
-            <b>Быстрые команды в чате:</b>\n\
-            • <code>!status</code> — статус\n\
-            • <code>!exit</code> — выход",
-            duration,
-            if save_examples { "✅ примеры сохраняются" } else { "❌ без сохранения" }
-        )
-    } else {
-        "👻 <b>Ghost Mode</b>\n\n\
-        Статус: 🔴 Выключен\n\n\
-        <b>Что это:</b>\n\
-        Режим, в котором ты пишешь от имени бота.\n\n\
-        <b>Зачем:</b>\n\
-        • Обучить персону на примерах\n\
-        • Ответить за бота когда он тупит\n\
-        • Показать как надо отвечать\n\n\
-        <b>Как работает:</b>\n\
-        1. Включаешь режим\n\
-        2. Пишешь сообщение\n\
-        3. Твоё сообщение удаляется\n\
-        4. Появляется от имени бота\n\
-        5. Сохраняется в RAG-память".to_string()
-    };
-    
-    let kb = if is_active {
-        InlineKeyboardMarkup::new(vec![
-            vec![InlineKeyboardButton::callback("🔴 Выключить", "ghost_off")],
-            vec![InlineKeyboardButton::callback("🔙 Назад", "main")],
-        ])
-    } else {
-        InlineKeyboardMarkup::new(vec![
-            vec![
-                InlineKeyboardButton::callback("🟢 Включить", "ghost_on"),
-            ],
-            vec![
-                InlineKeyboardButton::callback("🟡 Без сохранения", "ghost_on_nosave"),
-            ],
-            vec![InlineKeyboardButton::callback("🔙 Назад", "main")],
-        ])
-    };
-    
-    bot.edit_message_text(chat_id, msg_id, text)
-        .parse_mode(ParseMode::Html)
-        .reply_markup(kb)
-        .await?;
-    Ok(())
-}
-
 async fn edit_tools_menu(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> ResponseResult<()> {
     let kb = InlineKeyboardMarkup::new(vec![
         vec![InlineKeyboardButton::callback("📢 Рассылка", "tools_broadcast")],
@@ -760,7 +678,6 @@ async fn edit_status(bot: &Bot, chat_id: ChatId, msg_id: MessageId, state: &AppS
         .unwrap_or_else(|| state.config.ollama_chat_model.clone());
     
     let stats = state.queue_stats.lock().await.clone();
-    let ghost = state.is_ghost_mode(chat_id).await;
     
     let msg_count = db::get_message_count(&state.db_pool, chat_id.0).await.unwrap_or(0);
     let memory_count = db::get_memory_count(&state.db_pool, chat_id.0).await.unwrap_or(0);
@@ -772,8 +689,7 @@ async fn edit_status(bot: &Bot, chat_id: ChatId, msg_id: MessageId, state: &AppS
         • БД: {}\n\n\
         <b>Конфигурация:</b>\n\
         • Модель: <code>{}</code>\n\
-        • Персона: {}\n\
-        • Ghost: {}\n\n\
+        • Персона: {}\n\n\
         <b>Очередь LLM:</b>\n\
         • Слотов: {}/{}\n\
         • Запросов: {} (✅{} ❌{})\n\
@@ -785,7 +701,6 @@ async fn edit_status(bot: &Bot, chat_id: ChatId, msg_id: MessageId, state: &AppS
         if db_ok { "🟢" } else { "🔴" },
         model,
         persona,
-        if ghost { "🟢" } else { "🔴" },
         state.llm_semaphore.available_permits(),
         state.config.max_concurrent_llm_requests.unwrap_or(3),
         stats.total_requests,
@@ -819,12 +734,9 @@ async fn edit_help(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> ResponseRes
         ],
         vec![
             InlineKeyboardButton::callback("💬 Чат", "help_chat"),
-            InlineKeyboardButton::callback("👻 Ghost", "help_ghost"),
-        ],
-        vec![
             InlineKeyboardButton::callback("🧠 RAG", "help_rag"),
-            InlineKeyboardButton::callback("📋 Команды", "help_commands"),
         ],
+        vec![InlineKeyboardButton::callback("📋 Команды", "help_commands")],
         vec![InlineKeyboardButton::callback("🔙 Назад", "main")],
     ]);
     
@@ -951,47 +863,6 @@ Retrieval-Augmented Generation — бот помнит контекст разг
     Ok(())
 }
 
-async fn edit_help_ghost(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> ResponseResult<()> {
-    let text = r#"👻 <b>Ghost Mode — пиши от имени бота</b>
-
-<b>Что это:</b>
-Режим, в котором твои сообщения отправляются от имени бота. Твоё сообщение удаляется, а вместо него появляется такое же — но от бота.
-
-<b>Зачем нужен:</b>
-• 📚 <b>Обучение</b> — показать персоне как надо отвечать
-• 🔧 <b>Фикс</b> — ответить за бота когда он тупит
-• 🎭 <b>Демо</b> — показать возможности бота
-
-<b>Два режима:</b>
-• 🟢 <b>С сохранением</b> — примеры идут в RAG-память, персона учится
-• 🟡 <b>Без сохранения</b> — просто отправка, без обучения
-
-<b>Как использовать:</b>
-<code>/ghost on</code> — включить (с сохранением)
-<code>/ghost on nosave</code> — включить (без сохранения)
-
-<b>Быстрые команды в режиме:</b>
-<code>!status</code> — сколько времени активен
-<code>!exit</code> — выйти из режима
-
-<b>Пример:</b>
-1. Пишешь <code>/ghost on</code>
-2. Пишешь "Привет! Как дела?"
-3. Твоё сообщение исчезает
-4. Появляется от бота: "Привет! Как дела?"
-5. Пишешь <code>!exit</code> — выход"#;
-    
-    let kb = InlineKeyboardMarkup::new(vec![
-        vec![InlineKeyboardButton::callback("🔙 К помощи", "help")],
-    ]);
-    
-    bot.edit_message_text(chat_id, msg_id, text)
-        .parse_mode(ParseMode::Html)
-        .reply_markup(kb)
-        .await?;
-    Ok(())
-}
-
 async fn edit_help_rag(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> ResponseResult<()> {
     let text = r#"🧠 <b>RAG (Retrieval-Augmented Generation)</b>
 
@@ -1065,9 +936,6 @@ async fn edit_help_commands(bot: &Bot, chat_id: ChatId, msg_id: MessageId) -> Re
 /set_cooldown секунды
 /triggers слово1, слово2
 
-<b>Ghost:</b>
-/ghost on|off|status
-
 <b>Утилиты:</b>
 /broadcast текст
 /stats — статистика очереди
@@ -1123,13 +991,12 @@ pub async fn send_main_menu_new(bot: &Bot, chat_id: ChatId) -> ResponseResult<()
         ],
         vec![
             InlineKeyboardButton::callback("💬 Чат", "chat"),
-            InlineKeyboardButton::callback("👻 Ghost", "ghost"),
+            InlineKeyboardButton::callback("🛠️ Инструменты", "tools"),
         ],
         vec![
-            InlineKeyboardButton::callback("🛠️ Инструменты", "tools"),
             InlineKeyboardButton::callback("📊 Статус", "status"),
+            InlineKeyboardButton::callback("❓ Помощь", "help"),
         ],
-        vec![InlineKeyboardButton::callback("❓ Помощь", "help")],
     ]);
     
     bot.send_message(chat_id, "🤖 <b>PersonaForge</b>\n\nВыберите раздел:")

@@ -411,59 +411,6 @@ pub async fn update_triggers(
     Ok(Json(ApiResponse::ok(())))
 }
 
-// --- Ghost Mode ---
-
-#[derive(Serialize)]
-pub struct GhostModeResponse {
-    pub chat_id: i64,
-    pub enabled: bool,
-    pub save_as_examples: bool,
-}
-
-#[derive(Deserialize)]
-pub struct UpdateGhostModeRequest {
-    pub enabled: bool,
-    pub save_as_examples: Option<bool>,
-}
-
-pub async fn get_ghost_mode(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(chat_id): Path<i64>,
-) -> Result<Json<ApiResponse<GhostModeResponse>>, StatusCode> {
-    extract_user(&headers, &state)?;
-
-    let ghost = state.ghost_mode.lock().await;
-    let chat_id_typed = teloxide::types::ChatId(chat_id);
-    
-    let (enabled, save) = ghost
-        .get(&chat_id_typed)
-        .map(|g| (g.enabled, g.save_as_examples))
-        .unwrap_or((false, true));
-
-    Ok(Json(ApiResponse::ok(GhostModeResponse {
-        chat_id,
-        enabled,
-        save_as_examples: save,
-    })))
-}
-
-pub async fn update_ghost_mode(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Path(chat_id): Path<i64>,
-    Json(req): Json<UpdateGhostModeRequest>,
-) -> Result<Json<ApiResponse<()>>, StatusCode> {
-    extract_user(&headers, &state)?;
-
-    let chat_id_typed = teloxide::types::ChatId(chat_id);
-    let save = req.save_as_examples.unwrap_or(true);
-    
-    state.toggle_ghost_mode(chat_id_typed, req.enabled, save).await;
-
-    Ok(Json(ApiResponse::ok(())))
-}
-
 // --- Broadcast ---
 
 #[derive(Deserialize)]

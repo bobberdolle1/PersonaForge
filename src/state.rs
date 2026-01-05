@@ -14,7 +14,6 @@ pub type DialogueState = Arc<Mutex<HashMap<ChatId, Vec<Message>>>>;
 pub type AdminCache = Arc<Mutex<HashMap<ChatId, Vec<UserId>>>>;
 pub type RateLimiter = Arc<Mutex<HashMap<ChatId, Instant>>>;
 pub type WizardStates = Arc<Mutex<HashMap<ChatId, WizardState>>>;
-pub type GhostModeChats = Arc<Mutex<HashMap<ChatId, GhostMode>>>;
 
 /// Wizard state for multi-step interactions
 #[derive(Clone, Debug)]
@@ -39,24 +38,6 @@ pub enum WizardState {
     Broadcasting,
 }
 
-/// Ghost mode state for owner takeover
-#[derive(Clone, Debug)]
-pub struct GhostMode {
-    pub enabled: bool,
-    pub save_as_examples: bool,
-    pub started_at: Instant,
-}
-
-impl Default for GhostMode {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            save_as_examples: true,
-            started_at: Instant::now(),
-        }
-    }
-}
-
 /// Queue statistics for monitoring
 #[derive(Clone, Debug, Default)]
 pub struct QueueStats {
@@ -78,7 +59,6 @@ pub struct AppState {
     pub admin_cache: AdminCache,
     pub rate_limiter: RateLimiter,
     pub wizard_states: WizardStates,
-    pub ghost_mode: GhostModeChats,
     pub llm_semaphore: Arc<Semaphore>,
     pub queue_stats: Arc<Mutex<QueueStats>>,
     pub keyword_triggers: Arc<Mutex<HashMap<ChatId, Vec<String>>>>,
@@ -108,31 +88,10 @@ impl AppState {
             admin_cache: Arc::new(Mutex::new(HashMap::new())),
             rate_limiter: Arc::new(Mutex::new(HashMap::new())),
             wizard_states: Arc::new(Mutex::new(HashMap::new())),
-            ghost_mode: Arc::new(Mutex::new(HashMap::new())),
             llm_semaphore: Arc::new(Semaphore::new(max_concurrent_llm)),
             queue_stats: Arc::new(Mutex::new(QueueStats::default())),
             keyword_triggers: Arc::new(Mutex::new(HashMap::new())),
             security_tracker: Arc::new(SecurityTracker::new(security_config)),
-        }
-    }
-
-    /// Check if ghost mode is enabled for a chat
-    pub async fn is_ghost_mode(&self, chat_id: ChatId) -> bool {
-        let ghost = self.ghost_mode.lock().await;
-        ghost.get(&chat_id).map(|g| g.enabled).unwrap_or(false)
-    }
-
-    /// Toggle ghost mode for a chat
-    pub async fn toggle_ghost_mode(&self, chat_id: ChatId, enabled: bool, save_examples: bool) {
-        let mut ghost = self.ghost_mode.lock().await;
-        if enabled {
-            ghost.insert(chat_id, GhostMode {
-                enabled: true,
-                save_as_examples: save_examples,
-                started_at: Instant::now(),
-            });
-        } else {
-            ghost.remove(&chat_id);
         }
     }
 

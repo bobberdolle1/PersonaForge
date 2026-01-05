@@ -63,8 +63,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/chats/{chat_id}", get(api::get_chat_settings).put(api::update_chat_settings))
         // Triggers
         .route("/chats/{chat_id}/triggers", get(api::get_triggers).put(api::update_triggers))
-        // Ghost mode
-        .route("/chats/{chat_id}/ghost", get(api::get_ghost_mode).put(api::update_ghost_mode))
         // Security
         .route("/security", get(api::get_security_config))
         .route("/security/users/{user_id}", get(api::get_user_security_status))
