@@ -11,5 +11,6 @@
 
 # Database
 /persona_forge.db*
+/data/
 .sqlx/
 .kiro

@@ -278,8 +278,11 @@ fn build_prompt(
     short_term_history: Vec<Message>,
     bot_name: &str,
 ) -> String {
-    // Add bot name to system prompt
-    let mut prompt = format!("System: Your name is {}. {}\n\n", bot_name, persona_prompt);
+    // Add bot name prominently at the start of system prompt
+    let mut prompt = format!(
+        "System: Тебя зовут {}. Это твоё настоящее имя, используй его когда представляешься или когда тебя спрашивают как тебя зовут.\n\n{}\n\n",
+        bot_name, persona_prompt
+    );
 
     if !long_term_memories.is_empty() {
         prompt.push_str("### Relevant Past Memories (for context):\n");
