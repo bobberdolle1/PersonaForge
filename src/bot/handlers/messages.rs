@@ -228,17 +228,29 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
         chat_triggered || persona_triggered
     };
     
-    let should_reply = if is_private || is_reply_to_bot || is_mentioned_by_name || is_triggered || has_media || chat_settings.reply_mode == "all_messages" {
+    let should_reply = if is_private || is_reply_to_bot || is_mentioned_by_name || is_triggered || has_media {
+        // Always reply: private chat, reply to bot, mention, trigger, or media
         true
+    } else if chat_settings.reply_mode == "all_messages" {
+        // In "all_messages" mode, reply with probability
+        use rand::Rng;
+        let probability = db::get_config_f64(&state.db_pool, "random_reply_probability", state.config.random_reply_probability).await;
+        if probability <= 0.0 {
+            false
+        } else if probability >= 1.0 {
+            true
+        } else {
+            rand::rng().random::<f64>() < probability
+        }
     } else {
-        // For "mention_only" mode, check if bot is mentioned
+        // For "mention_only" mode, check if bot is mentioned by @username
         let bot_info = bot.get_me().await;
         if let Ok(me) = bot_info {
             let username = me.user.username.as_deref().unwrap_or("");
             text.contains(&format!("@{}", username))
                 || text.contains(&format!("/{}", username))
         } else {
-            false // If we can't get bot info, default to not replying in mention-only mode
+            false
         }
     };
 
