@@ -1,11 +1,13 @@
 use crate::db;
-use crate::state::{AppState, DialogueState};
+use crate::state::{AppState, DialogueState, PendingBatch};
 use teloxide::prelude::*;
-use teloxide::types::ParseMode;
+use teloxide::types::{ParseMode, ReplyParameters};
+use std::time::Instant;
 
-const MAX_CONTEXT_MESSAGES: usize = 20; // Maximum context size to prevent memory issues, but can be overridden by chat settings
+const MAX_CONTEXT_MESSAGES: usize = 20;
 const MAX_RAG_CHUNKS: u32 = 3;
 const DEFAULT_PERSONA_PROMPT: &str = "You are a helpful AI assistant.";
+const DEBOUNCE_MS: u64 = 1500; // Wait 1.5 seconds for more messages
 
 pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
@@ -103,14 +105,70 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
         return Ok(());
     }
 
+    // Check user rate limit (5 responses per minute)
+    let user_id = msg.from.as_ref().map(|u| u.id.0).unwrap_or(0);
+    if !state.check_user_rate_limit(user_id).await {
+        log::debug!("User {} rate limited", user_id);
+        return Ok(());
+    }
+
     // Check cooldown
     if check_cooldown(&state, chat_id).await {
         return Ok(());
     }
 
+    // --- Debounce: collect messages and wait for more ---
+    let thread_id = msg.thread_id;
+    let batch_key = (chat_id, thread_id);
+    let user_name = msg.from.as_ref().map(|u| u.first_name.clone()).unwrap_or_else(|| "User".to_string());
+    
+    {
+        let mut pending = state.pending_messages.lock().await;
+        let batch = pending.entry(batch_key).or_insert_with(|| PendingBatch {
+            messages: Vec::new(),
+            last_message_time: Instant::now(),
+            user_id: Some(user_id),
+            user_name: user_name.clone(),
+        });
+        batch.messages.push(text.to_string());
+        batch.last_message_time = Instant::now();
+        
+        // If this is not the first message in batch, just add and return
+        // The first message handler will process all
+        if batch.messages.len() > 1 {
+            log::debug!("Added message to batch for {:?}, total: {}", batch_key, batch.messages.len());
+            return Ok(());
+        }
+    }
+    
+    // Wait for debounce period
+    tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
+    
+    // Check if more messages arrived during debounce
+    let combined_text = {
+        let mut pending = state.pending_messages.lock().await;
+        if let Some(batch) = pending.remove(&batch_key) {
+            // Check if last message was recent (more messages might be coming)
+            if batch.last_message_time.elapsed().as_millis() < (DEBOUNCE_MS / 2) as u128 {
+                // Put it back and wait more
+                pending.insert(batch_key, batch);
+                drop(pending);
+                tokio::time::sleep(std::time::Duration::from_millis(DEBOUNCE_MS)).await;
+                
+                // Try again
+                let mut pending = state.pending_messages.lock().await;
+                pending.remove(&batch_key).map(|b| b.messages.join("\n")).unwrap_or_else(|| text.to_string())
+            } else {
+                batch.messages.join("\n")
+            }
+        } else {
+            text.to_string()
+        }
+    };
+
     // --- RAG & Context ---
     let long_term_memories = if chat_settings.rag_enabled {
-        retrieve_memories(&state, chat_id, text).await
+        retrieve_memories(&state, chat_id, &combined_text).await
     } else {
         vec![] // Empty vector if RAG is disabled
     };
@@ -123,9 +181,6 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     let prompt = build_prompt(persona_prompt, long_term_memories, short_term_history, &bot_name);
 
     log::debug!("Prompt for chat {}: {}", chat_id, prompt);
-
-    // Get thread_id for forum topics support
-    let thread_id = msg.thread_id;
 
     // --- Show typing indicator ---
     let mut typing_action = bot.send_chat_action(chat_id, teloxide::types::ChatAction::Typing);
@@ -148,9 +203,10 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
             // Try to send with MarkdownV2, fallback to plain text if parsing fails
             let escaped = escape_markdown_v2(&processed_response);
             
-            // Build send message request with thread_id support
+            // Build send message request with thread_id and reply support
             let mut send_req = bot.send_message(chat_id, &escaped)
-                .parse_mode(ParseMode::MarkdownV2);
+                .parse_mode(ParseMode::MarkdownV2)
+                .reply_parameters(ReplyParameters::new(msg.id));
             if let Some(tid) = thread_id {
                 send_req = send_req.message_thread_id(tid);
             }
@@ -162,7 +218,8 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
                 Err(_) => {
                     // Markdown parsing failed, try plain text
                     log::debug!("Markdown parsing failed, sending as plain text");
-                    let mut plain_req = bot.send_message(chat_id, &processed_response);
+                    let mut plain_req = bot.send_message(chat_id, &processed_response)
+                        .reply_parameters(ReplyParameters::new(msg.id));
                     if let Some(tid) = thread_id {
                         plain_req = plain_req.message_thread_id(tid);
                     }
@@ -178,7 +235,8 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
         Err(e) => {
             let response_time = start_time.elapsed().as_millis();
             log::error!("Failed to get response from LLM after {}ms: {}", response_time, e);
-            let mut err_req = bot.send_message(chat_id, "Не удалось сгенерировать ответ.");
+            let mut err_req = bot.send_message(chat_id, "Не удалось сгенерировать ответ.")
+                .reply_parameters(ReplyParameters::new(msg.id));
             if let Some(tid) = thread_id {
                 err_req = err_req.message_thread_id(tid);
             }

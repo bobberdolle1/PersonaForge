@@ -15,6 +15,17 @@ pub type DialogueState = Arc<Mutex<HashMap<ChatId, Vec<Message>>>>;
 pub type AdminCache = Arc<Mutex<HashMap<ChatId, Vec<UserId>>>>;
 pub type RateLimiter = Arc<Mutex<HashMap<ChatId, Instant>>>;
 pub type WizardStates = Arc<Mutex<HashMap<ChatId, WizardState>>>;
+pub type PendingMessages = Arc<Mutex<HashMap<(ChatId, Option<teloxide::types::ThreadId>), PendingBatch>>>;
+pub type UserRateLimit = Arc<Mutex<HashMap<u64, Vec<Instant>>>>;
+
+/// Pending message batch for debounce
+#[derive(Clone, Debug)]
+pub struct PendingBatch {
+    pub messages: Vec<String>,
+    pub last_message_time: Instant,
+    pub user_id: Option<u64>,
+    pub user_name: String,
+}
 
 /// Wizard state for multi-step interactions
 #[derive(Clone, Debug)]
@@ -74,6 +85,8 @@ pub struct AppState {
     pub security_tracker: Arc<SecurityTracker>,
     pub paused: Arc<AtomicBool>,
     pub bot_info: Arc<Mutex<Option<BotInfo>>>,
+    pub pending_messages: PendingMessages,
+    pub user_rate_limits: UserRateLimit,
 }
 
 impl AppState {
@@ -105,7 +118,30 @@ impl AppState {
             security_tracker: Arc::new(SecurityTracker::new(security_config)),
             paused: Arc::new(AtomicBool::new(false)),
             bot_info: Arc::new(Mutex::new(None)),
+            pending_messages: Arc::new(Mutex::new(HashMap::new())),
+            user_rate_limits: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Check user rate limit (max 5 responses per minute)
+    pub async fn check_user_rate_limit(&self, user_id: u64) -> bool {
+        let mut limits = self.user_rate_limits.lock().await;
+        let now = Instant::now();
+        let one_minute_ago = now - std::time::Duration::from_secs(60);
+        
+        let timestamps = limits.entry(user_id).or_insert_with(Vec::new);
+        
+        // Remove old timestamps
+        timestamps.retain(|t| *t > one_minute_ago);
+        
+        // Check if over limit (5 per minute)
+        if timestamps.len() >= 5 {
+            return false; // Rate limited
+        }
+        
+        // Add new timestamp
+        timestamps.push(now);
+        true // Allowed
     }
 
     /// Set bot info from Telegram API
