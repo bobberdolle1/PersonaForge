@@ -13,7 +13,7 @@ axum = { version = "*", features = ["macros"] }
 base64 = "*"
 bincode = "1"
 chrono = { version = "*", features = ["serde"] }
-colored = "2"
+colored = "3"
 dotenv = "*"
 envy = "*"
 futures = "*"
