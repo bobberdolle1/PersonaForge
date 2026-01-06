@@ -355,8 +355,11 @@ async fn show_personas_list_inline(bot: &Bot, chat_id: ChatId, msg_id: MessageId
     
     for p in &personas {
         let status = if p.is_active { "🟢" } else { "⚪" };
+        let display_name = p.display_name.as_ref()
+            .map(|n| format!(" ({})", n))
+            .unwrap_or_default();
         let preview = if p.prompt.len() > 50 { format!("{}...", &p.prompt[..50]) } else { p.prompt.clone() };
-        text.push_str(&format!("{} <b>{}</b> (ID: {})\n<i>{}</i>\n\n", status, p.name, p.id, preview));
+        text.push_str(&format!("{} <b>{}</b>{} (ID: {})\n<i>{}</i>\n\n", status, p.name, display_name, p.id, preview));
         
         let mut row = vec![];
         if !p.is_active {
@@ -387,12 +390,20 @@ async fn show_persona_detail(bot: &Bot, chat_id: ChatId, msg_id: MessageId, stat
     match persona {
         Some(p) => {
             let status = if p.is_active { "🟢 Активна" } else { "⚪ Неактивна" };
+            let display_name = p.display_name.as_ref()
+                .map(|n| n.as_str())
+                .unwrap_or("по умолчанию");
+            let triggers = p.triggers.as_ref()
+                .map(|t| t.as_str())
+                .unwrap_or("не заданы");
             let text = format!(
                 "🎭 <b>{}</b>\n\n\
                 <b>ID:</b> {}\n\
-                <b>Статус:</b> {}\n\n\
+                <b>Статус:</b> {}\n\
+                <b>Имя:</b> {}\n\
+                <b>Триггеры:</b> {}\n\n\
                 <b>Промпт:</b>\n<code>{}</code>",
-                p.name, p.id, status, p.prompt
+                p.name, p.id, status, display_name, triggers, p.prompt
             );
             
             let mut buttons = vec![

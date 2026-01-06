@@ -44,6 +44,8 @@ pub struct Persona {
     pub name: String,
     pub prompt: String,
     pub is_active: bool,
+    pub display_name: Option<String>,
+    pub triggers: Option<String>,
 }
 
 /// Persona export format for JSON serialization
@@ -53,6 +55,10 @@ pub struct PersonaExport {
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triggers: Option<String>,
     #[serde(default)]
     pub version: String,
 }
@@ -63,6 +69,8 @@ impl From<Persona> for PersonaExport {
             name: p.name,
             prompt: p.prompt,
             description: None,
+            display_name: p.display_name,
+            triggers: p.triggers,
             version: "1.0".to_string(),
         }
     }
@@ -81,37 +89,43 @@ pub struct ChatSettings {
 // --- Public Functions: Personas ---
 
 pub async fn get_all_personas(pool: &SqlitePool) -> Result<Vec<Persona>, sqlx::Error> {
-    sqlx::query("SELECT id, name, prompt, is_active FROM personas ORDER BY name")
+    sqlx::query("SELECT id, name, prompt, is_active, display_name, triggers FROM personas ORDER BY name")
         .map(|row: SqliteRow| Persona {
             id: row.get("id"),
             name: row.get("name"),
             prompt: row.get("prompt"),
             is_active: row.get("is_active"),
+            display_name: row.get("display_name"),
+            triggers: row.get("triggers"),
         })
         .fetch_all(pool)
         .await
 }
 
 pub async fn get_active_persona(pool: &SqlitePool) -> Result<Option<Persona>, sqlx::Error> {
-    sqlx::query("SELECT id, name, prompt, is_active FROM personas WHERE is_active = 1 LIMIT 1")
+    sqlx::query("SELECT id, name, prompt, is_active, display_name, triggers FROM personas WHERE is_active = 1 LIMIT 1")
         .map(|row: SqliteRow| Persona {
             id: row.get("id"),
             name: row.get("name"),
             prompt: row.get("prompt"),
             is_active: row.get("is_active"),
+            display_name: row.get("display_name"),
+            triggers: row.get("triggers"),
         })
         .fetch_optional(pool)
         .await
 }
 
 pub async fn get_persona_by_id(pool: &SqlitePool, id: i64) -> Result<Option<Persona>, sqlx::Error> {
-    sqlx::query("SELECT id, name, prompt, is_active FROM personas WHERE id = ?")
+    sqlx::query("SELECT id, name, prompt, is_active, display_name, triggers FROM personas WHERE id = ?")
         .bind(id)
         .map(|row: SqliteRow| Persona {
             id: row.get("id"),
             name: row.get("name"),
             prompt: row.get("prompt"),
             is_active: row.get("is_active"),
+            display_name: row.get("display_name"),
+            triggers: row.get("triggers"),
         })
         .fetch_optional(pool)
         .await
@@ -130,14 +144,26 @@ pub async fn set_active_persona(pool: &SqlitePool, persona_id: i64) -> Result<()
 }
 
 pub async fn create_persona(pool: &SqlitePool, name: &str, prompt: &str) -> Result<i64, sqlx::Error> {
+    create_persona_full(pool, name, prompt, None, None).await
+}
+
+pub async fn create_persona_full(
+    pool: &SqlitePool, 
+    name: &str, 
+    prompt: &str,
+    display_name: Option<&str>,
+    triggers: Option<&str>,
+) -> Result<i64, sqlx::Error> {
     let result = sqlx::query(
         r#"
-        INSERT INTO personas (name, prompt, is_active)
-        VALUES (?, ?, 0)
+        INSERT INTO personas (name, prompt, is_active, display_name, triggers)
+        VALUES (?, ?, 0, ?, ?)
         "#,
     )
     .bind(name)
     .bind(prompt)
+    .bind(display_name)
+    .bind(triggers)
     .execute(pool)
     .await?;
 
@@ -145,15 +171,28 @@ pub async fn create_persona(pool: &SqlitePool, name: &str, prompt: &str) -> Resu
 }
 
 pub async fn update_persona(pool: &SqlitePool, id: i64, name: &str, prompt: &str) -> Result<(), sqlx::Error> {
+    update_persona_full(pool, id, name, prompt, None, None).await
+}
+
+pub async fn update_persona_full(
+    pool: &SqlitePool, 
+    id: i64, 
+    name: &str, 
+    prompt: &str,
+    display_name: Option<&str>,
+    triggers: Option<&str>,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         UPDATE personas
-        SET name = ?, prompt = ?
+        SET name = ?, prompt = ?, display_name = ?, triggers = ?
         WHERE id = ?
         "#,
     )
     .bind(name)
     .bind(prompt)
+    .bind(display_name)
+    .bind(triggers)
     .bind(id)
     .execute(pool)
     .await?;
@@ -759,9 +798,15 @@ pub async fn import_persona(pool: &SqlitePool, json: &str) -> Result<i64, Import
         return Err(ImportError::ValidationError("Name and prompt cannot be empty".to_string()));
     }
     
-    create_persona(pool, &export.name, &export.prompt)
-        .await
-        .map_err(|e| ImportError::DatabaseError(e.to_string()))
+    create_persona_full(
+        pool, 
+        &export.name, 
+        &export.prompt,
+        export.display_name.as_deref(),
+        export.triggers.as_deref(),
+    )
+    .await
+    .map_err(|e| ImportError::DatabaseError(e.to_string()))
 }
 
 /// Import multiple personas from JSON array
@@ -774,7 +819,13 @@ pub async fn import_personas(pool: &SqlitePool, json: &str) -> Result<Vec<i64>, 
         if export.name.is_empty() || export.prompt.is_empty() {
             continue;
         }
-        match create_persona(pool, &export.name, &export.prompt).await {
+        match create_persona_full(
+            pool, 
+            &export.name, 
+            &export.prompt,
+            export.display_name.as_deref(),
+            export.triggers.as_deref(),
+        ).await {
             Ok(id) => ids.push(id),
             Err(e) => log::warn!("Failed to import persona '{}': {}", export.name, e),
         }

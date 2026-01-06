@@ -32,8 +32,12 @@ pub struct PendingBatch {
 pub enum WizardState {
     /// Creating persona - waiting for name
     CreatingPersonaName,
-    /// Creating persona - waiting for prompt (name stored)
-    CreatingPersonaPrompt { name: String },
+    /// Creating persona - waiting for display name (name stored)
+    CreatingPersonaDisplayName { name: String },
+    /// Creating persona - waiting for triggers (name, display_name stored)
+    CreatingPersonaTriggers { name: String, display_name: Option<String> },
+    /// Creating persona - waiting for prompt (name, display_name, triggers stored)
+    CreatingPersonaPrompt { name: String, display_name: Option<String>, triggers: Option<String> },
     /// Updating persona - waiting for ID
     UpdatingPersonaId,
     /// Updating persona - waiting for new name

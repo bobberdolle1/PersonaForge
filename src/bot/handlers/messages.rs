@@ -1,5 +1,5 @@
 use crate::db;
-use crate::state::{AppState, DialogueState, PendingBatch};
+use crate::state::{AppState, DialogueState, PendingBatch, WizardState};
 use teloxide::prelude::*;
 use teloxide::types::{ParseMode, ReplyParameters};
 use std::time::Instant;
@@ -16,6 +16,11 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     if text.starts_with('/') {
         // Handle commands
         return crate::bot::handlers::commands::handle_command(bot, msg, state).await;
+    }
+
+    // Check for active wizard state first
+    if let Some(wizard_state) = state.get_wizard_state(chat_id).await {
+        return handle_wizard_input(bot, msg, state, wizard_state).await;
     }
 
     // Check if bot is paused
@@ -39,13 +44,25 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     save_and_embed_message(&state, &msg).await;
 
     // --- Get Active Persona ---
-    let persona_prompt = db::get_active_persona(&state.db_pool)
+    let active_persona = db::get_active_persona(&state.db_pool)
         .await
-        .map(|p_opt| p_opt.map_or_else(|| DEFAULT_PERSONA_PROMPT.to_string(), |p| p.prompt))
         .unwrap_or_else(|e| {
             log::error!("Failed to get active persona: {}", e);
-            DEFAULT_PERSONA_PROMPT.to_string()
+            None
         });
+    
+    let persona_prompt = active_persona.as_ref()
+        .map(|p| p.prompt.clone())
+        .unwrap_or_else(|| DEFAULT_PERSONA_PROMPT.to_string());
+    
+    // Get persona's display name (fallback to bot name from config)
+    let persona_display_name = active_persona.as_ref()
+        .and_then(|p| p.display_name.clone());
+    
+    // Get persona's triggers
+    let persona_triggers: Option<Vec<String>> = active_persona.as_ref()
+        .and_then(|p| p.triggers.as_ref())
+        .map(|t| t.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect());
 
     // --- Get Chat Settings ---
     let chat_settings = db::get_or_create_chat_settings(&state.db_pool, chat_id.0).await
@@ -70,22 +87,45 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     // Check reply mode (mention/command vs all messages)
     // In private chats, always reply
     // If someone replies to bot's message, always reply
-    // If someone mentions bot by name, always reply
+    // If someone mentions bot by name (or persona's display name), always reply
+    // If message contains a keyword trigger (chat or persona), always reply
     let is_private = msg.chat.is_private();
     let is_reply_to_bot = msg.reply_to_message().map(|reply| {
         reply.from.as_ref().map(|u| u.is_bot).unwrap_or(false)
     }).unwrap_or(false);
     
-    // Check if bot is mentioned by name or username
+    // Check if bot is mentioned by name, persona display name, or username
     let bot_name = state.get_bot_name().await;
     let bot_username = state.get_bot_username().await;
     let text_lower = text.to_lowercase();
     let bot_name_lower = bot_name.to_lowercase();
     
-    let is_mentioned_by_name = text_lower.contains(&bot_name_lower) ||
+    // Use persona's display name if set, otherwise use bot's default name
+    let effective_name = persona_display_name.as_ref()
+        .map(|n| n.to_lowercase())
+        .unwrap_or_else(|| bot_name_lower.clone());
+    
+    let is_mentioned_by_name = text_lower.contains(&effective_name) ||
+        text_lower.contains(&bot_name_lower) ||
         bot_username.as_ref().map(|u| text.contains(&format!("@{}", u))).unwrap_or(false);
     
-    let should_reply = if is_private || is_reply_to_bot || is_mentioned_by_name || chat_settings.reply_mode == "all_messages" {
+    // Check if message contains any keyword trigger (chat-level or persona-level)
+    let chat_triggers = state.keyword_triggers.lock().await.get(&chat_id).cloned();
+    let is_triggered = {
+        // Check chat-level triggers
+        let chat_triggered = chat_triggers.as_ref().map(|kw| {
+            kw.iter().any(|keyword| text_lower.contains(keyword))
+        }).unwrap_or(false);
+        
+        // Check persona-level triggers
+        let persona_triggered = persona_triggers.as_ref().map(|kw| {
+            kw.iter().any(|keyword| text_lower.contains(keyword))
+        }).unwrap_or(false);
+        
+        chat_triggered || persona_triggered
+    };
+    
+    let should_reply = if is_private || is_reply_to_bot || is_mentioned_by_name || is_triggered || chat_settings.reply_mode == "all_messages" {
         true
     } else {
         // For "mention_only" mode, check if bot is mentioned
@@ -176,9 +216,11 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     // Use context depth from chat settings
     let short_term_history = get_and_update_history_with_depth(state.dialogues.clone(), &msg, chat_settings.context_depth as usize).await;
     
-    // Get bot name for prompt
+    // Get effective name for prompt (persona's display_name or bot's default name)
     let bot_name = state.get_bot_name().await;
-    let prompt = build_prompt(persona_prompt, long_term_memories, short_term_history, &bot_name);
+    let effective_name = persona_display_name.as_ref()
+        .unwrap_or(&bot_name);
+    let prompt = build_prompt(persona_prompt, long_term_memories, short_term_history, effective_name);
 
     log::debug!("Prompt for chat {}: {}", chat_id, prompt);
 
@@ -336,10 +378,15 @@ fn build_prompt(
     short_term_history: Vec<Message>,
     bot_name: &str,
 ) -> String {
-    // Add bot name prominently at the start of system prompt
+    // Build system prompt with bot name integration
+    // The bot name from config is the "real" name that the persona should use
     let mut prompt = format!(
-        "System: Тебя зовут {}. Это твоё настоящее имя, используй его когда представляешься или когда тебя спрашивают как тебя зовут.\n\n{}\n\n",
-        bot_name, persona_prompt
+        "System: Тебя зовут {name}. Это твоё имя — используй его когда представляешься или когда спрашивают как тебя зовут. \
+        Ты откликаешься на имя \"{name}\" и его вариации. \
+        Когда к тебе обращаются по имени, отвечай как будто это твоё настоящее имя.\n\n\
+        {prompt}\n\n",
+        name = bot_name,
+        prompt = persona_prompt
     );
 
     if !long_term_memories.is_empty() {
@@ -544,4 +591,263 @@ fn should_escape_in_formatted(c: char) -> bool {
 fn should_escape_outside(c: char) -> bool {
     // Outside formatted text, escape all special chars
     matches!(c, '\\' | '[' | ']' | '(' | ')' | '~' | '>' | '#' | '+' | '-' | '=' | '|' | '{' | '}' | '.' | '!')
+}
+
+
+// === WIZARD HANDLERS ===
+
+async fn handle_wizard_input(bot: Bot, msg: Message, state: AppState, wizard_state: WizardState) -> ResponseResult<()> {
+    let chat_id = msg.chat.id;
+    let text = msg.text().unwrap_or_default().trim();
+
+    match wizard_state {
+        WizardState::CreatingPersonaName => {
+            if text.is_empty() {
+                bot.send_message(chat_id, "❌ Название не может быть пустым. Попробуйте ещё раз:").await?;
+                return Ok(());
+            }
+            // Move to display name step
+            state.set_wizard_state(chat_id, WizardState::CreatingPersonaDisplayName { name: text.to_string() }).await;
+            
+            let bot_name = state.get_bot_name().await;
+            bot.send_message(chat_id, format!(
+                "✅ Название: <b>{}</b>\n\n\
+                Теперь укажите <b>имя</b>, на которое персона будет откликаться.\n\n\
+                💡 Текущее имя бота: <code>{}</code>\n\
+                Отправьте <code>-</code> чтобы использовать имя бота по умолчанию.\n\n\
+                /cancel для отмены",
+                text, bot_name
+            ))
+            .parse_mode(ParseMode::Html)
+            .await?;
+        }
+        
+        WizardState::CreatingPersonaDisplayName { name } => {
+            let display_name = if text == "-" || text.is_empty() {
+                None // Use default bot name
+            } else {
+                Some(text.to_string())
+            };
+            
+            // Move to triggers step
+            state.set_wizard_state(chat_id, WizardState::CreatingPersonaTriggers { name, display_name: display_name.clone() }).await;
+            
+            let display_info = display_name.as_ref()
+                .map(|n| format!("<code>{}</code>", n))
+                .unwrap_or_else(|| "имя бота по умолчанию".to_string());
+            
+            bot.send_message(chat_id, format!(
+                "✅ Имя персоны: {}\n\n\
+                Теперь укажите <b>триггеры</b> — ключевые слова через запятую, на которые персона будет реагировать.\n\n\
+                💡 Пример: <code>помоги, подскажи, эй</code>\n\
+                Отправьте <code>-</code> чтобы пропустить (только имя и @упоминание).\n\n\
+                /cancel для отмены",
+                display_info
+            ))
+            .parse_mode(ParseMode::Html)
+            .await?;
+        }
+        
+        WizardState::CreatingPersonaTriggers { name, display_name } => {
+            let triggers = if text == "-" || text.is_empty() {
+                None
+            } else {
+                let keywords: Vec<String> = text
+                    .split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if keywords.is_empty() { None } else { Some(keywords.join(",")) }
+            };
+            
+            // Move to prompt step
+            state.set_wizard_state(chat_id, WizardState::CreatingPersonaPrompt { name, display_name, triggers: triggers.clone() }).await;
+            
+            let triggers_info = triggers.as_ref()
+                .map(|t| format!("<code>{}</code>", t))
+                .unwrap_or_else(|| "не заданы".to_string());
+            
+            bot.send_message(chat_id, format!(
+                "✅ Триггеры: {}\n\n\
+                Теперь введите <b>системный промпт</b> для персоны.\n\n\
+                💡 Опишите характер, стиль общения, правила поведения.\n\n\
+                /cancel для отмены",
+                triggers_info
+            ))
+            .parse_mode(ParseMode::Html)
+            .await?;
+        }
+        
+        WizardState::CreatingPersonaPrompt { name, display_name, triggers } => {
+            if text.is_empty() {
+                bot.send_message(chat_id, "❌ Промпт не может быть пустым. Попробуйте ещё раз:").await?;
+                return Ok(());
+            }
+            
+            // Create persona with all fields
+            match db::create_persona_full(
+                &state.db_pool, 
+                &name, 
+                text,
+                display_name.as_deref(),
+                triggers.as_deref(),
+            ).await {
+                Ok(id) => {
+                    state.clear_wizard_state(chat_id).await;
+                    
+                    let display_info = display_name.as_ref()
+                        .map(|n| format!("Имя: {}", n))
+                        .unwrap_or_else(|| "Имя: по умолчанию".to_string());
+                    let triggers_info = triggers.as_ref()
+                        .map(|t| format!("Триггеры: {}", t))
+                        .unwrap_or_else(|| "Триггеры: не заданы".to_string());
+                    
+                    bot.send_message(chat_id, format!(
+                        "✅ Персона <b>{}</b> создана!\n\n\
+                        📋 ID: {}\n\
+                        👤 {}\n\
+                        🎯 {}\n\n\
+                        Используйте /activate_persona {} или меню для активации.",
+                        name, id, display_info, triggers_info, id
+                    ))
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                }
+                Err(e) => {
+                    log::error!("Failed to create persona: {}", e);
+                    state.clear_wizard_state(chat_id).await;
+                    bot.send_message(chat_id, "❌ Ошибка при создании персоны.").await?;
+                }
+            }
+        }
+        
+        WizardState::UpdatingPersonaName { id } => {
+            if text.is_empty() {
+                bot.send_message(chat_id, "❌ Название не может быть пустым. Попробуйте ещё раз:").await?;
+                return Ok(());
+            }
+            state.set_wizard_state(chat_id, WizardState::UpdatingPersonaPrompt { id, name: text.to_string() }).await;
+            bot.send_message(chat_id, format!(
+                "✅ Новое название: <b>{}</b>\n\nТеперь введите новый промпт:\n\n/cancel для отмены",
+                text
+            ))
+            .parse_mode(ParseMode::Html)
+            .await?;
+        }
+        
+        WizardState::UpdatingPersonaPrompt { id, name } => {
+            if text.is_empty() {
+                bot.send_message(chat_id, "❌ Промпт не может быть пустым. Попробуйте ещё раз:").await?;
+                return Ok(());
+            }
+            
+            match db::update_persona(&state.db_pool, id, &name, text).await {
+                Ok(()) => {
+                    state.clear_wizard_state(chat_id).await;
+                    bot.send_message(chat_id, format!("✅ Персона {} обновлена.", id)).await?;
+                }
+                Err(e) => {
+                    log::error!("Failed to update persona: {}", e);
+                    state.clear_wizard_state(chat_id).await;
+                    bot.send_message(chat_id, "❌ Ошибка при обновлении персоны.").await?;
+                }
+            }
+        }
+        
+        WizardState::SettingKeywords => {
+            let keywords: Vec<String> = text
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            
+            if keywords.is_empty() {
+                bot.send_message(chat_id, "❌ Введите хотя бы одно ключевое слово через запятую:").await?;
+                return Ok(());
+            }
+            
+            state.keyword_triggers.lock().await.insert(chat_id, keywords.clone());
+            state.clear_wizard_state(chat_id).await;
+            bot.send_message(chat_id, format!("✅ Триггеры установлены: {}", keywords.join(", "))).await?;
+        }
+        
+        WizardState::ImportingPersona => {
+            // Try to import from text or check for document
+            if let Some(doc) = msg.document() {
+                // Handle document import
+                let file = bot.get_file(doc.file.id.clone()).await?;
+                let mut buffer = Vec::new();
+                use teloxide::net::Download;
+                bot.download_file(&file.path, &mut buffer).await?;
+                let json = String::from_utf8_lossy(&buffer);
+                
+                match db::import_personas(&state.db_pool, &json).await {
+                    Ok(ids) if !ids.is_empty() => {
+                        state.clear_wizard_state(chat_id).await;
+                        bot.send_message(chat_id, format!("✅ Импортировано {} персон: {:?}", ids.len(), ids)).await?;
+                    }
+                    Ok(_) => {
+                        match db::import_persona(&state.db_pool, &json).await {
+                            Ok(id) => {
+                                state.clear_wizard_state(chat_id).await;
+                                bot.send_message(chat_id, format!("✅ Персона импортирована с ID: {}", id)).await?;
+                            }
+                            Err(e) => {
+                                bot.send_message(chat_id, format!("❌ Ошибка импорта: {}", e)).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        bot.send_message(chat_id, format!("❌ Ошибка импорта: {}", e)).await?;
+                    }
+                }
+            } else if !text.is_empty() {
+                // Try to parse as JSON
+                match db::import_persona(&state.db_pool, text).await {
+                    Ok(id) => {
+                        state.clear_wizard_state(chat_id).await;
+                        bot.send_message(chat_id, format!("✅ Персона импортирована с ID: {}", id)).await?;
+                    }
+                    Err(e) => {
+                        bot.send_message(chat_id, format!("❌ Ошибка импорта: {}\n\nПопробуйте ещё раз или /cancel", e)).await?;
+                    }
+                }
+            } else {
+                bot.send_message(chat_id, "❌ Отправьте JSON-файл или текст в формате JSON.").await?;
+            }
+        }
+        
+        WizardState::Broadcasting => {
+            if text.is_empty() {
+                bot.send_message(chat_id, "❌ Сообщение не может быть пустым. Попробуйте ещё раз:").await?;
+                return Ok(());
+            }
+            
+            let chats = db::get_all_chat_ids(&state.db_pool).await.unwrap_or_default();
+            if chats.is_empty() {
+                state.clear_wizard_state(chat_id).await;
+                bot.send_message(chat_id, "❌ Нет чатов для рассылки.").await?;
+                return Ok(());
+            }
+            
+            let (mut ok, mut err) = (0, 0);
+            for target in &chats {
+                match bot.send_message(ChatId(*target), text).await {
+                    Ok(_) => ok += 1,
+                    Err(_) => err += 1,
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            
+            state.clear_wizard_state(chat_id).await;
+            bot.send_message(chat_id, format!("📢 Рассылка завершена: ✅{} ❌{}", ok, err)).await?;
+        }
+        
+        // Handle other wizard states that don't need text input
+        _ => {
+            state.clear_wizard_state(chat_id).await;
+        }
+    }
+    
+    Ok(())
 }
