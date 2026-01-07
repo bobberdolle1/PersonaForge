@@ -15,6 +15,13 @@ pub async fn handle_message(bot: Bot, msg: Message, state: AppState) -> Response
     let chat_id = msg.chat.id;
     let thread_id = msg.thread_id;
     
+    // Skip old messages (older than 60 seconds) - prevents flood after reconnect
+    let msg_age = chrono::Utc::now().timestamp() - msg.date.timestamp();
+    if msg_age > 60 {
+        tracing::debug!(target: "messages", "Skipping old message ({} seconds old) in chat {}", msg_age, chat_id);
+        return Ok(());
+    }
+    
     // Check for GIF (animation), video_note (circle video), or voice message
     let media_description = if let Some(animation) = msg.animation() {
         if state.config.vision_enabled {
